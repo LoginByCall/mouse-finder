@@ -7,8 +7,8 @@ __pycache__/
 dist/
 build/
 *.spec
-# generated copy inside package template
-pkg/usr/lib/mouse-finder/mouse_finder.py
+# binary installed into pkg template by `make deb`
+pkg/usr/bin/mouse-finder
 
 # internal
 CLAUDE.md
