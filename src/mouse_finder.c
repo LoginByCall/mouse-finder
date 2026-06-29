@@ -500,7 +500,7 @@ static void on_menu_deactivate(GtkMenuShell *shell, App *app) {
 
 static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
     if (app->active_menu) {
-        gtk_widget_hide(app->active_menu);
+        gtk_menu_popdown(GTK_MENU(app->active_menu));
         return;
     }
     if (app->menu_just_closed) return;
