@@ -46,6 +46,8 @@ typedef struct App {
     gint64          last_shake_ms;
     /* GTK */
     GtkStatusIcon  *tray;
+    GtkWidget      *active_menu;
+    gint64          menu_closed_ms;
     pthread_t       record_tid;
 } App;
 
@@ -89,6 +91,61 @@ static void settings_save(const Settings *s) {
     g_free(dir);
     g_key_file_save_to_file(kf, path, NULL);
     g_free(path); g_key_file_free(kf);
+}
+
+/* ── Localisation ────────────────────────────────────────────────────────── */
+typedef struct {
+    const char *menu_settings, *menu_autostart_on, *menu_autostart_off,
+               *menu_about, *menu_quit;
+    const char *dlg_title, *dlg_cancel, *dlg_apply;
+    const char *lbl_cursor, *lbl_duration, *lbl_reversals, *lbl_speed;
+    const char *about_comments;
+} Lang;
+
+static const Lang L_RU = {
+    "Настройки…", "Автостарт: ВКЛ ✓", "Автостарт: ВЫКЛ", "О программе…", "Выход",
+    "Mouse Finder — Настройки", "Отмена", "Применить",
+    "Размер курсора (px)", "Длительность (мс)", "Реверсов для тряски", "Мин. скорость (px/s)",
+    "Встряхни мышью — курсор увеличится и станет заметным.\nРаботает в сессии Ubuntu X11."
+};
+static const Lang L_EN = {
+    "Settings…", "Autostart: ON ✓", "Autostart: OFF", "About…", "Quit",
+    "Mouse Finder — Settings", "Cancel", "Apply",
+    "Cursor size (px)", "Duration (ms)", "Reversals to detect", "Min speed (px/s)",
+    "Shake the mouse — the cursor enlarges to help you spot it.\nRequires an Ubuntu X11 session."
+};
+static const Lang *L = &L_EN;
+
+static void lang_init(void) {
+    const char *loc = g_getenv("LANG");
+    if (!loc) loc = g_getenv("LANGUAGE");
+    if (!loc) loc = "";
+    if (strncmp(loc, "ru", 2) == 0) L = &L_RU;
+}
+
+/* ── Theme ───────────────────────────────────────────────────────────────── */
+static void apply_color_scheme(GSettings *gs) {
+    gchar *scheme = g_settings_get_string(gs, "color-scheme");
+    g_object_set(gtk_settings_get_default(),
+                 "gtk-application-prefer-dark-theme",
+                 (gboolean)(scheme && strstr(scheme, "dark")),
+                 NULL);
+    g_free(scheme);
+}
+
+static void on_color_scheme_changed(GSettings *gs, const char *key, gpointer unused) {
+    (void)key; (void)unused;
+    apply_color_scheme(gs);
+}
+
+static void theme_init(void) {
+    GSettingsSchemaSource *src = g_settings_schema_source_get_default();
+    if (!g_settings_schema_source_lookup(src, "org.gnome.desktop.interface", TRUE))
+        return;
+    GSettings *gs = g_settings_new("org.gnome.desktop.interface");
+    apply_color_scheme(gs);
+    /* ponytail: gs intentionally not unref'd — lives for process lifetime to keep signal active */
+    g_signal_connect(gs, "changed::color-scheme", G_CALLBACK(on_color_scheme_changed), NULL);
 }
 
 /* ── Cursor ──────────────────────────────────────────────────────────────── */
@@ -310,10 +367,10 @@ static void apply_settings(App *app, const Settings *s) {
 
 static void show_settings(App *app) {
     GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        "Mouse Finder — Настройки", NULL,
+        L->dlg_title, NULL,
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "Отмена", GTK_RESPONSE_CANCEL,
-        "Применить", GTK_RESPONSE_OK, NULL);
+        L->dlg_cancel, GTK_RESPONSE_CANCEL,
+        L->dlg_apply,  GTK_RESPONSE_OK, NULL);
 
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
@@ -324,10 +381,10 @@ static void show_settings(App *app) {
 
     Settings ns = app->cfg;
     struct { const char *lbl; int *val; double lo, hi, step; } rows[] = {
-        {"Размер курсора (px)",  &ns.cursor_size,   32,  256,  32},
-        {"Длительность (мс)",   &ns.show_duration, 500, 3000, 100},
-        {"Реверсов для тряски", &ns.min_reversals, 2,   6,    1 },
-        {"Мин. скорость (px/s)",&ns.min_speed,     100, 1000, 50},
+        {L->lbl_cursor,    &ns.cursor_size,   32,  256,  32},
+        {L->lbl_duration,  &ns.show_duration, 500, 3000, 100},
+        {L->lbl_reversals, &ns.min_reversals, 2,   6,    1 },
+        {L->lbl_speed,     &ns.min_speed,     100, 1000, 50},
     };
     int n = (int)(sizeof(rows)/sizeof(rows[0]));
     GtkWidget *scales[4];
@@ -417,36 +474,51 @@ static void show_about(App *app) {
     GtkWidget *dlg = gtk_about_dialog_new();
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dlg), "Mouse Finder");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dlg), "1.0");
-    gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dlg),
-        "Встряхни мышью — курсор увеличится и станет заметным.\n"
-        "Работает в сессии Ubuntu X11.");
+    gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dlg), L->about_comments);
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dlg), "© 2026 Alexander Rozhkov");
     gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dlg), GTK_LICENSE_MIT_X11);
     gtk_dialog_run(GTK_DIALOG(dlg));
     gtk_widget_destroy(dlg);
 }
 
+static void on_menu_deactivate(GtkMenuShell *shell, App *app) {
+    (void)shell;
+    app->active_menu    = NULL;
+    app->menu_closed_ms = g_get_monotonic_time() / 1000;
+}
+
 static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
+    /* Toggle: if menu is open, close it */
+    if (app->active_menu) {
+        gtk_menu_popdown(GTK_MENU(app->active_menu));
+        return;
+    }
+    /* Don't reopen when click caused the menu to close (< 300 ms ago) */
+    if (g_get_monotonic_time() / 1000 - app->menu_closed_ms < 300) return;
+
     GtkWidget *menu = gtk_menu_new();
 
-    GtkWidget *i_cfg = gtk_menu_item_new_with_label("Настройки…");
+    GtkWidget *i_cfg = gtk_menu_item_new_with_label(L->menu_settings);
     g_signal_connect_swapped(i_cfg, "activate", G_CALLBACK(show_settings), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_cfg);
 
-    const char *albl = autostart_enabled() ? "Автостарт: ВКЛ ✓" : "Автостарт: ВЫКЛ";
+    const char *albl = autostart_enabled() ? L->menu_autostart_on : L->menu_autostart_off;
     GtkWidget *i_auto = gtk_menu_item_new_with_label(albl);
     g_signal_connect_swapped(i_auto, "activate", G_CALLBACK(toggle_autostart), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_auto);
 
-    GtkWidget *i_about = gtk_menu_item_new_with_label("О программе…");
+    GtkWidget *i_about = gtk_menu_item_new_with_label(L->menu_about);
     g_signal_connect_swapped(i_about, "activate", G_CALLBACK(show_about), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_about);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
-    GtkWidget *i_quit = gtk_menu_item_new_with_label("Выход");
+    GtkWidget *i_quit = gtk_menu_item_new_with_label(L->menu_quit);
     g_signal_connect(i_quit, "activate", G_CALLBACK(gtk_main_quit), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_quit);
+
+    g_signal_connect(menu, "deactivate", G_CALLBACK(on_menu_deactivate), app);
+    app->active_menu = menu;
 
     gtk_widget_show_all(menu);
     gtk_menu_popup(GTK_MENU(menu), NULL, NULL,
@@ -463,6 +535,8 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 int main(int argc, char **argv) {
     XInitThreads();
     gtk_init(&argc, &argv);
+    lang_init();
+    theme_init();
 
     App app = {0};
     settings_load(&app.cfg);
