@@ -32,6 +32,7 @@ typedef struct App {
     Display        *data_dpy;       /* record data stream (thread)  */
     XRecordContext  record_ctx;
     Window          root;
+    Window          overlay;
     Cursor          big_cursor;
     gboolean        grabbed;
     /* Settings */
@@ -60,7 +61,7 @@ static char *cfg_path(void) {
 }
 
 static void settings_load(Settings *s) {
-    *s = (Settings){ 128, 1500, 3, 500 };
+    *s = (Settings){ 128, 1500, 4, 500 };
     GKeyFile *kf = g_key_file_new();
     char *path = cfg_path();
     if (g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL)) {
@@ -173,12 +174,13 @@ static gboolean detect_shake(App *app, gint64 now_ms) {
 static void record_callback(XPointer priv, XRecordInterceptData *data) {
     if (data->category != XRecordFromServer || data->data_len < 8) goto done;
 
-    /* X11 protocol: byte 0 = type, bytes 24-25 = rootX (LE int16) */
+    /* X11 protocol MotionNotify: byte 0 = type, bytes 20-21 = root-x (LE int16) */
     if ((data->data[0] & 0x7F) != MotionNotify) goto done;
 
     App *app = (App *)priv;
-    gint16 rx = (gint16)(data->data[24] | (unsigned)(data->data[25] << 8));
+    gint16 rx = (gint16)(data->data[20] | (unsigned)(data->data[21] << 8));
     gint64 now = g_get_monotonic_time() / 1000;
+
 
     int idx = app->sample_head;
     app->samples[idx] = (Sample){ now, rx };
@@ -220,24 +222,40 @@ static gboolean setup_record(App *app) {
     return TRUE;
 }
 
-/* ── Grab / ungrab ───────────────────────────────────────────────────────── */
+/* ── Overlay / ungrab ────────────────────────────────────────────────────── */
 static gboolean on_shake(gpointer ud) {
     App *app = (App *)ud;
     if (app->grabbed) return G_SOURCE_REMOVE;
-    int r = XGrabPointer(app->grab_dpy, app->root, False,
-        PointerMotionMask | ButtonPressMask | ButtonReleaseMask,
-        GrabModeAsync, GrabModeAsync, None, app->big_cursor, CurrentTime);
-    if (r == GrabSuccess) {
-        app->grabbed = TRUE;
-        g_timeout_add((guint)app->cfg.show_duration, ungrab, app);
-    }
+
+    /* ponytail: InputOnly overlay instead of XGrabPointer —
+       XGrabPointer fails when GNOME Shell holds its own grab;
+       InputOnly window sets cursor without stealing input */
+    int scr = DefaultScreen(app->grab_dpy);
+    XSetWindowAttributes attr = {0};
+    attr.override_redirect = True;
+    attr.cursor = app->big_cursor;
+
+    int w = XDisplayWidth(app->grab_dpy, scr);
+    int h = XDisplayHeight(app->grab_dpy, scr);
+
+    app->overlay = XCreateWindow(
+        app->grab_dpy, app->root,
+        0, 0, (unsigned)w, (unsigned)h,
+        0, CopyFromParent, InputOnly, CopyFromParent,
+        CWOverrideRedirect | CWCursor, &attr);
+    XMapRaised(app->grab_dpy, app->overlay);
+    XFlush(app->grab_dpy);
+
+    app->grabbed = TRUE;
+    g_timeout_add((guint)app->cfg.show_duration, ungrab, app);
     return G_SOURCE_REMOVE;
 }
 
 static gboolean ungrab(gpointer ud) {
     App *app = (App *)ud;
-    XUngrabPointer(app->grab_dpy, CurrentTime);
+    XDestroyWindow(app->grab_dpy, app->overlay);
     XFlush(app->grab_dpy);
+    app->overlay = 0;
     app->grabbed = FALSE;
     return G_SOURCE_REMOVE;
 }
@@ -338,8 +356,75 @@ static void show_settings(App *app) {
     gtk_widget_destroy(dlg);
 }
 
+/* ── Tray icon ───────────────────────────────────────────────────────────── */
+/*
+ * Design: black cursor arrow with white outline (readable on light/dark panels)
+ * + 3 horizontal motion lines left of the cursor (shake indicator, fading).
+ * Rendered at runtime via Cairo → GdkPixbuf; no external image files needed.
+ */
+static GdkPixbuf *tray_icon_pixbuf(int size) {
+    cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+    cairo_t *cr = cairo_create(surf);
+
+    /* s: cursor coord space is ~14×25 units; scale to leave left margin for lines */
+    double s  = size / 27.0;
+    double dx = 7.5;   /* cursor x-offset in cursor units → clears motion lines */
+
+    /* ── Motion lines (shake indicator) ──────────────────────────────── */
+    /* 3 horizontal strokes, longest/most-opaque at top, fading downward  */
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_width(cr, 1.5 * s);
+    const struct { double y, x2, a; } ml[] = {
+        { 5.5, 5.5, 0.80 },
+        { 9.5, 4.0, 0.50 },
+        {13.5, 2.5, 0.25 },
+    };
+    for (int i = 0; i < 3; i++) {
+        cairo_set_source_rgba(cr, 0, 0, 0, ml[i].a);
+        cairo_move_to(cr, 0.5  * s, ml[i].y * s);
+        cairo_line_to(cr, ml[i].x2 * s, ml[i].y * s);
+        cairo_stroke(cr);
+    }
+
+    /* ── Arrow cursor ─────────────────────────────────────────────────── */
+    /* Shadow */
+    cairo_set_source_rgba(cr, 0, 0, 0, 0.20);
+    arrow_path(cr, s, dx + 0.8, 0.8);
+    cairo_fill(cr);
+
+    /* Black outline: stroke + fill first, then overwrite body with white */
+    cairo_set_source_rgba(cr, 0, 0, 0, 1);
+    arrow_path(cr, s, dx, 0.0);
+    cairo_set_line_width(cr, 2.0 * s);
+    cairo_stroke_preserve(cr);
+    cairo_fill(cr);
+
+    cairo_set_source_rgba(cr, 1, 1, 1, 1);
+    arrow_path(cr, s, dx, 0.0);
+    cairo_fill(cr);
+
+    GdkPixbuf *pb = gdk_pixbuf_get_from_surface(surf, 0, 0, size, size);
+    cairo_destroy(cr);
+    cairo_surface_destroy(surf);
+    return pb;
+}
+
 /* ── Tray ────────────────────────────────────────────────────────────────── */
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+
+static void show_about(App *app) {
+    (void)app;
+    GtkWidget *dlg = gtk_about_dialog_new();
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dlg), "Mouse Finder");
+    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dlg), "1.0");
+    gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dlg),
+        "Встряхни мышью — курсор увеличится и станет заметным.\n"
+        "Работает в сессии Ubuntu X11.");
+    gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dlg), "© 2026 Alexander Rozhkov");
+    gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dlg), GTK_LICENSE_MIT_X11);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
 
 static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
     GtkWidget *menu = gtk_menu_new();
@@ -353,6 +438,10 @@ static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
     g_signal_connect_swapped(i_auto, "activate", G_CALLBACK(toggle_autostart), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_auto);
 
+    GtkWidget *i_about = gtk_menu_item_new_with_label("О программе…");
+    g_signal_connect_swapped(i_about, "activate", G_CALLBACK(show_about), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_about);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
     GtkWidget *i_quit = gtk_menu_item_new_with_label("Выход");
@@ -362,6 +451,10 @@ static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
     gtk_widget_show_all(menu);
     gtk_menu_popup(GTK_MENU(menu), NULL, NULL,
                    gtk_status_icon_position_menu, icon, btn, t);
+}
+
+static void tray_activate(GtkStatusIcon *icon, App *app) {
+    tray_popup(icon, 1, gtk_get_current_event_time(), app);
 }
 
 G_GNUC_END_IGNORE_DEPRECATIONS
@@ -388,10 +481,13 @@ int main(int argc, char **argv) {
     pthread_create(&app.record_tid, NULL, record_thread, &app);
 
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    app.tray = gtk_status_icon_new_from_icon_name("input-mouse");
+    GdkPixbuf *icon = tray_icon_pixbuf(22);
+    app.tray = gtk_status_icon_new_from_pixbuf(icon);
+    g_object_unref(icon);
     gtk_status_icon_set_tooltip_text(app.tray, "Mouse Finder — shake to find cursor");
     G_GNUC_END_IGNORE_DEPRECATIONS
-    g_signal_connect(app.tray, "popup-menu", G_CALLBACK(tray_popup), &app);
+    g_signal_connect(app.tray, "popup-menu", G_CALLBACK(tray_popup),   &app);
+    g_signal_connect(app.tray, "activate",   G_CALLBACK(tray_activate), &app);
 
     gtk_main();
 
