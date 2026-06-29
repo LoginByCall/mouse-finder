@@ -33,24 +33,36 @@ sudo apt install python3-gi python3-cairo python3-xlib libxcursor1
 
 ## Installation
 
+### Option 1 — Debian package (recommended)
+
+Download `mouse-finder_1.0.0_all.deb` from the [Releases](../../releases) page, then:
+
+```bash
+sudo apt install ./mouse-finder_1.0.0_all.deb
+mouse-finder &
+```
+
+`apt` will automatically install all required dependencies.
+
+### Option 2 — Standalone binary
+
+Download `mouse-finder` from the [Releases](../../releases) page. No Python or GTK required:
+
+```bash
+chmod +x mouse-finder
+./mouse-finder &
+```
+
+### Option 3 — From source
+
 ```bash
 git clone https://github.com/your-username/mouse-finder.git
 cd mouse-finder
-```
-
-No build step. Run directly:
-
-```bash
-python3 mouse_finder.py
-```
-
-To keep it running in the background:
-
-```bash
+sudo apt install python3-gi python3-cairo python3-xlib libxcursor1
 python3 mouse_finder.py &
 ```
 
-Or use the **Autostart** toggle in the tray menu to launch it automatically on login.
+Use the **Autostart** toggle in the tray menu to launch automatically on login.
 
 ## Usage
 

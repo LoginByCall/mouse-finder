@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Mouse Finder
+GenericName=Mouse Locator
+Comment=Shake to find mouse cursor (X11)
+Exec=mouse-finder
+Icon=input-mouse
+Type=Application
+Categories=Utility;
+Keywords=mouse;cursor;find;shake;tray;
+StartupNotify=false
+NoDisplay=false

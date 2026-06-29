@@ -1,0 +1,10 @@
+Package: mouse-finder
+Version: 1.0.0
+Architecture: all
+Maintainer: Alexander Rozhkov <2246636@gmail.com>
+Depends: python3 (>= 3.10), python3-gi, python3-cairo, python3-xlib, gir1.2-gtk-3.0, libxcursor1
+Homepage: https://github.com/2246636/mouse-finder
+Description: Shake to find mouse for Ubuntu (X11)
+ macOS-style shake-to-find-mouse tray application for Ubuntu 24 on X11.
+ Shake the mouse quickly left and right — the cursor temporarily enlarges
+ so you can spot it on the screen. Includes settings dialog and autostart.

@@ -3,6 +3,13 @@ __pycache__/
 *.pyo
 .env
 
+# build artifacts (upload to GitHub Releases, not committed)
+dist/
+build/
+*.spec
+# generated copy inside package template
+pkg/usr/lib/mouse-finder/mouse_finder.py
+
 # internal
 CLAUDE.md
 TZ.md
