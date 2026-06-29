@@ -10,7 +10,7 @@ import cairo
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
-from Xlib import X, display as xdisplay
+from Xlib import display as xdisplay
 
 # ── Tuning ──────────────────────────────────────────────────────────────────
 CURSOR_SIZE   = 128    # px
@@ -18,17 +18,42 @@ SHOW_DURATION = 1500   # ms
 COOLDOWN      = 1.0    # s between triggers
 POLL_MS       = 10     # ms between position samples
 WINDOW_MS     = 500    # shake detection window
-MIN_REVERSALS = 4      # direction reversals to detect shake
+MIN_REVERSALS = 3      # direction reversals to detect shake
 MIN_SPEED     = 500    # px/s minimum speed during reversal
 
 # ── libX11 / libXcursor ctypes bindings ─────────────────────────────────────
 _xcursor = ctypes.CDLL("libXcursor.so.1")
 _xlib    = ctypes.CDLL("libX11.so.6")
 
-_xlib.XOpenDisplay.restype  = ctypes.c_void_p
-_xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+_xlib.XOpenDisplay.restype   = ctypes.c_void_p
+_xlib.XOpenDisplay.argtypes  = [ctypes.c_char_p]
 _xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
 _xlib.XFreeCursor.argtypes   = [ctypes.c_void_p, ctypes.c_ulong]
+_xlib.XDefaultRootWindow.restype  = ctypes.c_ulong
+_xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+_xlib.XGrabPointer.restype   = ctypes.c_int
+_xlib.XGrabPointer.argtypes  = [
+    ctypes.c_void_p,  # display
+    ctypes.c_ulong,   # grab_window
+    ctypes.c_int,     # owner_events
+    ctypes.c_uint,    # event_mask
+    ctypes.c_int,     # pointer_mode
+    ctypes.c_int,     # keyboard_mode
+    ctypes.c_ulong,   # confine_to
+    ctypes.c_ulong,   # cursor
+    ctypes.c_ulong,   # time
+]
+_xlib.XUngrabPointer.restype  = ctypes.c_int
+_xlib.XUngrabPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+_xlib.XFlush.argtypes = [ctypes.c_void_p]
+
+# X11 constants for ctypes calls
+_GrabSuccess   = 0
+_GrabModeAsync = 1
+_CurrentTime   = 0
+_PointerMotionMask = 1 << 6
+_ButtonPressMask   = 1 << 2
+_ButtonReleaseMask = 1 << 3
 
 class _XcursorImage(ctypes.Structure):
     _fields_ = [
@@ -151,16 +176,20 @@ class ShakeDetector(threading.Thread):
         if len(samples) < 6:
             return False
 
-        reversals = 0
-        prev_vx   = None
+        reversals           = 0
+        prev_vx             = None
+        prev_fast_t         = None
         for i in range(1, len(samples)):
             dt = samples[i][0] - samples[i-1][0]
             if dt == 0:
                 continue
             vx = (samples[i][1] - samples[i-1][1]) / dt
             if abs(vx) < MIN_SPEED:
-                prev_vx = None
+                # reset direction memory after 200 ms of slow movement
+                if prev_fast_t and (samples[i][0] - prev_fast_t) > 0.2:
+                    prev_vx = None
                 continue
+            prev_fast_t = samples[i][0]
             if prev_vx is not None and (vx > 0) != (prev_vx > 0):
                 reversals += 1
             prev_vx = vx
@@ -171,12 +200,11 @@ class ShakeDetector(threading.Thread):
 # ── Main application ─────────────────────────────────────────────────────────
 class App:
     def __init__(self):
-        self._dpy     = xdisplay.Display()
-        self._root    = self._dpy.screen().root
-        cursor_xid, self._raw_dpy = make_big_cursor()
-        self._cursor = self._dpy.create_resource_object("cursor", cursor_xid)
-        self._grabbed = False
+        self._cursor_xid, self._raw_dpy = make_big_cursor()
+        self._root_xid = _xlib.XDefaultRootWindow(self._raw_dpy)
+        self._grabbed  = False
 
+        # python-xlib used only for tray (GTK) + mouse polling in ShakeDetector
         self._tray = Gtk.StatusIcon()
         self._tray.set_from_icon_name("input-mouse")
         self._tray.set_tooltip_text("Mouse Finder — shake to find cursor")
@@ -192,27 +220,28 @@ class App:
         menu.show_all()
         menu.popup(None, None, None, None, button, activate_time)
 
-    def _on_shake(self) -> bool:  # called from GTK main loop
+    def _on_shake(self) -> bool:  # called from GTK main loop via GLib.idle_add
         if self._grabbed:
             return False
-        status = self._root.grab_pointer(
-            False,
-            X.PointerMotionMask | X.ButtonPressMask | X.ButtonReleaseMask,
-            X.GrabModeAsync, X.GrabModeAsync,
-            X.NONE,
-            self._cursor,
-            X.CurrentTime,
+        event_mask = _PointerMotionMask | _ButtonPressMask | _ButtonReleaseMask
+        status = _xlib.XGrabPointer(
+            self._raw_dpy, self._root_xid,
+            False, event_mask,
+            _GrabModeAsync, _GrabModeAsync,
+            0,  # confine_to: None
+            self._cursor_xid,
+            _CurrentTime,
         )
-        if status == X.GrabSuccess:
+        if status == _GrabSuccess:
             self._grabbed = True
             GLib.timeout_add(SHOW_DURATION, self._ungrab)
-        return False  # don't repeat idle_add
+        return False
 
     def _ungrab(self) -> bool:
-        self._dpy.ungrab_pointer(X.CurrentTime)
-        self._dpy.flush()
+        _xlib.XUngrabPointer(self._raw_dpy, _CurrentTime)
+        _xlib.XFlush(self._raw_dpy)
         self._grabbed = False
-        return False  # don't repeat timeout
+        return False
 
     def run(self):
         self._detector.start()
@@ -222,9 +251,8 @@ class App:
             self._detector.stop()
             if self._grabbed:
                 self._ungrab()
-            _xlib.XFreeCursor(self._raw_dpy, self._cursor.id)
+            _xlib.XFreeCursor(self._raw_dpy, self._cursor_xid)
             _xlib.XCloseDisplay(self._raw_dpy)
-            self._dpy.close()
 
 
 if __name__ == "__main__":
