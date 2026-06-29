@@ -47,7 +47,8 @@ typedef struct App {
     /* GTK */
     GtkStatusIcon  *tray;
     GtkWidget      *active_menu;
-    gint64          menu_closed_ms;
+    gboolean        menu_just_closed;
+    guint           menu_close_timer;
     pthread_t       record_tid;
 } App;
 
@@ -481,20 +482,28 @@ static void show_about(App *app) {
     gtk_widget_destroy(dlg);
 }
 
+static gboolean menu_unblock(gpointer data) {
+    App *app = data;
+    app->menu_just_closed = FALSE;
+    app->menu_close_timer = 0;
+    return G_SOURCE_REMOVE;
+}
+
 static void on_menu_deactivate(GtkMenuShell *shell, App *app) {
     (void)shell;
-    app->active_menu    = NULL;
-    app->menu_closed_ms = g_get_monotonic_time() / 1000;
+    app->active_menu      = NULL;
+    app->menu_just_closed = TRUE;
+    if (app->menu_close_timer) g_source_remove(app->menu_close_timer);
+    /* ponytail: 200ms covers SNI/D-Bus delivery latency on Ubuntu 24 GNOME */
+    app->menu_close_timer = g_timeout_add(200, menu_unblock, app);
 }
 
 static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
-    /* Toggle: if menu is open, close it */
     if (app->active_menu) {
-        gtk_menu_popdown(GTK_MENU(app->active_menu));
+        gtk_widget_hide(app->active_menu);
         return;
     }
-    /* Don't reopen when click caused the menu to close (< 300 ms ago) */
-    if (g_get_monotonic_time() / 1000 - app->menu_closed_ms < 300) return;
+    if (app->menu_just_closed) return;
 
     GtkWidget *menu = gtk_menu_new();
 
