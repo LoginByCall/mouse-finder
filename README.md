@@ -46,10 +46,10 @@ Use the **Autostart** toggle in the tray menu to launch automatically on login.
 1. Run `mouse-finder` — a white cursor arrow icon appears in the system tray.
 2. Quickly shake the mouse left and right (3–4 reversals). The cursor grows large for ~1.5 s, then returns to normal.
 3. Click the tray icon:
-   - **Настройки…** — settings dialog
-   - **Автостарт: ВКЛ/ВЫКЛ** — toggle launch on login
-   - **О программе…** — version and description
-   - **Выход** — quit
+   - **Settings…** — open settings dialog
+   - **Autostart: ON/OFF** — toggle launch on login
+   - **About…** — version and description
+   - **Quit** — exit
 
 ## Settings
 
