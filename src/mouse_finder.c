@@ -11,6 +11,7 @@
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <gtk/gtk.h>
+#include <libayatana-appindicator/app-indicator.h>
 #include <math.h>
 #include <pthread.h>
 #include <string.h>
@@ -45,10 +46,8 @@ typedef struct App {
     int             sample_count;
     gint64          last_shake_ms;
     /* GTK */
-    GtkStatusIcon  *tray;
-    GtkWidget      *active_menu;
-    gboolean        menu_just_closed;
-    guint           menu_close_timer;
+    AppIndicator   *indicator;
+    GtkWidget      *i_auto;         /* autostart menu item — label updated on show */
     pthread_t       record_tid;
 } App;
 
@@ -420,55 +419,8 @@ static void show_settings(App *app) {
  * + 3 horizontal motion lines left of the cursor (shake indicator, fading).
  * Rendered at runtime via Cairo → GdkPixbuf; no external image files needed.
  */
-static GdkPixbuf *tray_icon_pixbuf(int size) {
-    cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
-    cairo_t *cr = cairo_create(surf);
-
-    /* s: cursor coord space is ~14×25 units; scale to leave left margin for lines */
-    double s  = size / 27.0;
-    double dx = 7.5;   /* cursor x-offset in cursor units → clears motion lines */
-
-    /* ── Motion lines (shake indicator) ──────────────────────────────── */
-    /* 3 horizontal strokes, longest/most-opaque at top, fading downward  */
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    cairo_set_line_width(cr, 1.5 * s);
-    const struct { double y, x2, a; } ml[] = {
-        { 5.5, 5.5, 0.80 },
-        { 9.5, 4.0, 0.50 },
-        {13.5, 2.5, 0.25 },
-    };
-    for (int i = 0; i < 3; i++) {
-        cairo_set_source_rgba(cr, 0, 0, 0, ml[i].a);
-        cairo_move_to(cr, 0.5  * s, ml[i].y * s);
-        cairo_line_to(cr, ml[i].x2 * s, ml[i].y * s);
-        cairo_stroke(cr);
-    }
-
-    /* ── Arrow cursor ─────────────────────────────────────────────────── */
-    /* Shadow */
-    cairo_set_source_rgba(cr, 0, 0, 0, 0.20);
-    arrow_path(cr, s, dx + 0.8, 0.8);
-    cairo_fill(cr);
-
-    /* Black outline: stroke + fill first, then overwrite body with white */
-    cairo_set_source_rgba(cr, 0, 0, 0, 1);
-    arrow_path(cr, s, dx, 0.0);
-    cairo_set_line_width(cr, 2.0 * s);
-    cairo_stroke_preserve(cr);
-    cairo_fill(cr);
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 1);
-    arrow_path(cr, s, dx, 0.0);
-    cairo_fill(cr);
-
-    GdkPixbuf *pb = gdk_pixbuf_get_from_surface(surf, 0, 0, size, size);
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
-    return pb;
-}
 
 /* ── Tray ────────────────────────────────────────────────────────────────── */
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 
 static void show_about(App *app) {
     (void)app;
@@ -482,38 +434,22 @@ static void show_about(App *app) {
     gtk_widget_destroy(dlg);
 }
 
-static gboolean menu_unblock(gpointer data) {
-    App *app = data;
-    app->menu_just_closed = FALSE;
-    app->menu_close_timer = 0;
-    return G_SOURCE_REMOVE;
+static void on_menu_show(GtkWidget *w, App *app) {
+    (void)w;
+    const char *lbl = autostart_enabled() ? L->menu_autostart_on : L->menu_autostart_off;
+    gtk_menu_item_set_label(GTK_MENU_ITEM(app->i_auto), lbl);
 }
 
-static void on_menu_deactivate(GtkMenuShell *shell, App *app) {
-    (void)shell;
-    app->active_menu      = NULL;
-    app->menu_just_closed = TRUE;
-    if (app->menu_close_timer) g_source_remove(app->menu_close_timer);
-    app->menu_close_timer = g_timeout_add(200, menu_unblock, app);
-}
-
-static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
-    if (app->active_menu) {
-        gtk_menu_popdown(GTK_MENU(app->active_menu));
-        return;
-    }
-    if (app->menu_just_closed) return;
-
+static GtkWidget *build_tray_menu(App *app) {
     GtkWidget *menu = gtk_menu_new();
 
     GtkWidget *i_cfg = gtk_menu_item_new_with_label(L->menu_settings);
     g_signal_connect_swapped(i_cfg, "activate", G_CALLBACK(show_settings), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_cfg);
 
-    const char *albl = autostart_enabled() ? L->menu_autostart_on : L->menu_autostart_off;
-    GtkWidget *i_auto = gtk_menu_item_new_with_label(albl);
-    g_signal_connect_swapped(i_auto, "activate", G_CALLBACK(toggle_autostart), app);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_auto);
+    app->i_auto = gtk_menu_item_new_with_label(L->menu_autostart_off);
+    g_signal_connect_swapped(app->i_auto, "activate", G_CALLBACK(toggle_autostart), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), app->i_auto);
 
     GtkWidget *i_about = gtk_menu_item_new_with_label(L->menu_about);
     g_signal_connect_swapped(i_about, "activate", G_CALLBACK(show_about), app);
@@ -525,20 +461,11 @@ static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
     g_signal_connect(i_quit, "activate", G_CALLBACK(gtk_main_quit), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_quit);
 
-    g_signal_connect(menu, "deactivate", G_CALLBACK(on_menu_deactivate), app);
-    app->active_menu = menu;
-
+    g_signal_connect(menu, "show", G_CALLBACK(on_menu_show), app);
     gtk_widget_show_all(menu);
-    gtk_menu_popup(GTK_MENU(menu), NULL, NULL,
-                   gtk_status_icon_position_menu, icon, btn, t);
+    return menu;
 }
 
-static void tray_activate(GtkStatusIcon *icon, App *app) {
-    /* button=0: GTK won't close the menu on button-release (no MENU_POPUP_DELAY auto-dismiss) */
-    tray_popup(icon, 0, gtk_get_current_event_time(), app);
-}
-
-G_GNUC_END_IGNORE_DEPRECATIONS
 
 /* ── Main ────────────────────────────────────────────────────────────────── */
 int main(int argc, char **argv) {
@@ -563,14 +490,10 @@ int main(int argc, char **argv) {
     }
     pthread_create(&app.record_tid, NULL, record_thread, &app);
 
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    GdkPixbuf *icon = tray_icon_pixbuf(22);
-    app.tray = gtk_status_icon_new_from_pixbuf(icon);
-    g_object_unref(icon);
-    gtk_status_icon_set_tooltip_text(app.tray, "Mouse Finder — shake to find cursor");
-    G_GNUC_END_IGNORE_DEPRECATIONS
-    g_signal_connect(app.tray, "popup-menu", G_CALLBACK(tray_popup),   &app);
-    g_signal_connect(app.tray, "activate",   G_CALLBACK(tray_activate), &app);
+    app.indicator = app_indicator_new("mouse-finder", "input-mouse",
+                                      APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+    app_indicator_set_status(app.indicator, APP_INDICATOR_STATUS_ACTIVE);
+    app_indicator_set_menu(app.indicator, GTK_MENU(build_tray_menu(&app)));
 
     gtk_main();
 
@@ -582,6 +505,5 @@ int main(int argc, char **argv) {
     XCloseDisplay(app.data_dpy);
     XFreeCursor(app.grab_dpy, app.big_cursor);
     XCloseDisplay(app.grab_dpy);
-    g_object_unref(app.tray);
     return 0;
 }

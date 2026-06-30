@@ -4,8 +4,8 @@ BINARY  := dist/mouse-finder
 DEB     := dist/mouse-finder_$(VERSION)_amd64.deb
 
 CC      := gcc
-CFLAGS  := $(shell pkg-config --cflags gtk+-3.0 x11 xcursor xtst cairo) -Wall -O2
-LIBS    := $(shell pkg-config --libs   gtk+-3.0 x11 xcursor xtst cairo) -lpthread -lm
+CFLAGS  := $(shell pkg-config --cflags gtk+-3.0 x11 xcursor xtst cairo ayatana-appindicator3-0.1) -Wall -O2
+LIBS    := $(shell pkg-config --libs   gtk+-3.0 x11 xcursor xtst cairo ayatana-appindicator3-0.1) -lpthread -lm
 
 .PHONY: all binary deb clean
 
