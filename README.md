@@ -33,7 +33,7 @@ mouse-finder &
 
 ```bash
 sudo apt install build-essential libgtk-3-dev libxcursor-dev libxtst-dev libcairo2-dev libayatana-appindicator3-dev
-git clone https://github.com/2246636/mouse-finder.git
+git clone https://github.com/LoginByCall/mouse-finder.git
 cd mouse-finder
 make
 ./dist/mouse-finder &
