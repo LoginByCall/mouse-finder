@@ -16,7 +16,7 @@ Shake the mouse left and right — the cursor temporarily enlarges to 128 px so 
 ## Requirements
 
 - Ubuntu 24.04 with an **X11 session** (not Wayland — choose "Ubuntu on Xorg" at login)
-- Runtime libs (pre-installed on Ubuntu Desktop): `libgtk-3-0 libxcursor1 libxtst6 libcairo2`
+- Runtime libs (pre-installed on Ubuntu Desktop): `libgtk-3-0 libxcursor1 libxtst6 libcairo2 libayatana-appindicator3-1`
 
 ## Installation
 
@@ -32,7 +32,7 @@ mouse-finder &
 ### Option 2 — From source
 
 ```bash
-sudo apt install build-essential libgtk-3-dev libxcursor-dev libxtst-dev libcairo2-dev
+sudo apt install build-essential libgtk-3-dev libxcursor-dev libxtst-dev libcairo2-dev libayatana-appindicator3-dev
 git clone https://github.com/2246636/mouse-finder.git
 cd mouse-finder
 make
@@ -43,9 +43,9 @@ Use the **Autostart** toggle in the tray menu to launch automatically on login.
 
 ## Usage
 
-1. Run `mouse-finder` — a mouse icon appears in the system tray.
+1. Run `mouse-finder` — a white cursor arrow icon appears in the system tray.
 2. Quickly shake the mouse left and right (3–4 reversals). The cursor grows large for ~1.5 s, then returns to normal.
-3. Click the tray icon (left or right button):
+3. Click the tray icon:
    - **Настройки…** — settings dialog
    - **Автостарт: ВКЛ/ВЫКЛ** — toggle launch on login
    - **О программе…** — version and description
