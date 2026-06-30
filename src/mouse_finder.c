@@ -494,7 +494,6 @@ static void on_menu_deactivate(GtkMenuShell *shell, App *app) {
     app->active_menu      = NULL;
     app->menu_just_closed = TRUE;
     if (app->menu_close_timer) g_source_remove(app->menu_close_timer);
-    /* ponytail: 200ms covers SNI/D-Bus delivery latency on Ubuntu 24 GNOME */
     app->menu_close_timer = g_timeout_add(200, menu_unblock, app);
 }
 
@@ -535,7 +534,8 @@ static void tray_popup(GtkStatusIcon *icon, guint btn, guint t, App *app) {
 }
 
 static void tray_activate(GtkStatusIcon *icon, App *app) {
-    tray_popup(icon, 1, gtk_get_current_event_time(), app);
+    /* button=0: GTK won't close the menu on button-release (no MENU_POPUP_DELAY auto-dismiss) */
+    tray_popup(icon, 0, gtk_get_current_event_time(), app);
 }
 
 G_GNUC_END_IGNORE_DEPRECATIONS
