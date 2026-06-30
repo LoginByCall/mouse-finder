@@ -450,11 +450,10 @@ static const unsigned char TRAY_ICON_PNG[] = {
 };
 
 static void setup_indicator_icon(void) {
-    /* Write to ~/.local/share/icons — GNOME Shell reads this path natively */
     char *apps = g_build_filename(g_get_home_dir(), ".local", "share", "icons",
                                   "hicolor", "22x22", "apps", NULL);
     g_mkdir_with_parents(apps, 0755);
-    char *file = g_build_filename(apps, "mouse-finder.png", NULL);
+    char *file = g_build_filename(apps, "mf-icon.png", NULL);
     g_file_set_contents(file, (const gchar *)TRAY_ICON_PNG,
                         (gssize)sizeof(TRAY_ICON_PNG), NULL);
     g_free(file);
@@ -532,8 +531,11 @@ int main(int argc, char **argv) {
     pthread_create(&app.record_tid, NULL, record_thread, &app);
 
     setup_indicator_icon();
-    app.indicator = app_indicator_new("mouse-finder", "mouse-finder",
+    char *icon_theme = g_build_filename(g_get_home_dir(), ".local", "share", "icons", NULL);
+    app.indicator = app_indicator_new("mouse-finder", "mf-icon",
                                       APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+    app_indicator_set_icon_theme_path(app.indicator, icon_theme);
+    g_free(icon_theme);
     app_indicator_set_status(app.indicator, APP_INDICATOR_STATUS_ACTIVE);
     app_indicator_set_menu(app.indicator, GTK_MENU(build_tray_menu(&app)));
 
