@@ -1,0 +1,6 @@
+# mouse-finder reads /dev/input/eventN directly (X11/Wayland-independent
+# shake detection). Grant the active graphical session user read access via
+# the same uaccess/logind mechanism systemd already uses for joysticks
+# (see /usr/lib/udev/rules.d/70-uaccess.rules) — no root, no 'input' group,
+# no re-login needed.
+SUBSYSTEM=="input", ENV{ID_INPUT_MOUSE}=="1", TAG+="uaccess"

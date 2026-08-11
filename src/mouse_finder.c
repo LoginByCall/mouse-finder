@@ -1,4 +1,4 @@
-/* mouse_finder.c — Shake-to-find-mouse for Ubuntu 24 X11
+/* mouse_finder.c — Shake-to-find-mouse for Ubuntu (X11 and Wayland)
  * Copyright (c) 2026 Alexander Rozhkov — MIT License
  * Build: make
  */
@@ -6,7 +6,6 @@
 /* X11 headers before GTK to avoid None/Cursor conflicts */
 #include <X11/Xlib.h>
 #include <X11/Xcursor/Xcursor.h>
-#include <X11/extensions/record.h>
 #include <cairo/cairo.h>
 #include <glib.h>
 #include <glib/gstdio.h>
@@ -17,21 +16,23 @@
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <linux/input.h>
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
-#define SAMPLE_MAX   64
-#define WINDOW_MS    500
-#define COOLDOWN_MS  1000
+#define SAMPLE_MAX     64
+#define WINDOW_MS      500
+#define COOLDOWN_MS    1000
+#define MAX_MOUSE_DEVS 16
 
 /* ── Types ───────────────────────────────────────────────────────────────── */
 typedef struct { int cursor_size, show_duration, min_reversals, min_speed; } Settings;
 typedef struct { gint64 t_ms; gint16 x; }                                    Sample;
 
 typedef struct App {
-    /* X11 */
-    Display        *grab_dpy;       /* cursor + grab + record ctrl  */
-    Display        *data_dpy;       /* record data stream (thread)  */
-    XRecordContext  record_ctx;
+    /* X11 (cursor + overlay only — input no longer read via X11) */
+    Display        *grab_dpy;
     Window          root;
     Window          overlay;
     Cursor          big_cursor;
@@ -45,6 +46,11 @@ typedef struct App {
     int             sample_head;
     int             sample_count;
     gint64          last_shake_ms;
+    gint32          x_acc;          /* running relative-X position, evdev */
+    /* evdev mouse sources */
+    int             mouse_fds[MAX_MOUSE_DEVS];
+    int             mouse_fd_count;
+    volatile gint   running;        /* g_atomic flag, set 0 to stop record thread */
     /* GTK */
     AppIndicator   *indicator;
     GtkWidget      *i_auto;         /* autostart menu item — label updated on show */
@@ -106,13 +112,13 @@ static const Lang L_RU = {
     "Настройки…", "Автостарт: ВКЛ ✓", "Автостарт: ВЫКЛ", "О программе…", "Выход",
     "Mouse Finder — Настройки", "Отмена", "Применить",
     "Размер курсора (px)", "Длительность (мс)", "Реверсов для тряски", "Мин. скорость (px/s)",
-    "Встряхни мышью — курсор увеличится и станет заметным.\nРаботает в сессии Ubuntu X11."
+    "Встряхни мышью — курсор увеличится и станет заметным."
 };
 static const Lang L_EN = {
     "Settings…", "Autostart: ON ✓", "Autostart: OFF", "About…", "Quit",
     "Mouse Finder — Settings", "Cancel", "Apply",
     "Cursor size (px)", "Duration (ms)", "Reversals to detect", "Min speed (px/s)",
-    "Shake the mouse — the cursor enlarges to help you spot it.\nRequires an Ubuntu X11 session."
+    "Shake the mouse — the cursor enlarges to help you spot it."
 };
 static const Lang *L = &L_EN;
 
@@ -228,55 +234,73 @@ static gboolean detect_shake(App *app, gint64 now_ms) {
     return reversals >= min_rev;
 }
 
-static void record_callback(XPointer priv, XRecordInterceptData *data) {
-    if (data->category != XRecordFromServer || data->data_len < 8) goto done;
+/* ponytail: pointer devices found via kernel's own "mouseN" legacy handler
+   classification in /proc/bus/input/devices — avoids adding a libudev dep
+   just to ask udev the same question. */
+static int scan_mouse_devices(int *fds, int max_fds) {
+    FILE *f = fopen("/proc/bus/input/devices", "r");
+    if (!f) return 0;
 
-    /* X11 protocol MotionNotify: byte 0 = type, bytes 20-21 = root-x (LE int16) */
-    if ((data->data[0] & 0x7F) != MotionNotify) goto done;
+    char line[512], handlers[256] = "";
+    int n = 0;
 
-    App *app = (App *)priv;
-    gint16 rx = (gint16)(data->data[20] | (unsigned)(data->data[21] << 8));
-    gint64 now = g_get_monotonic_time() / 1000;
-
-
-    int idx = app->sample_head;
-    app->samples[idx] = (Sample){ now, rx };
-    app->sample_head  = (idx + 1) % SAMPLE_MAX;
-    if (app->sample_count < SAMPLE_MAX) app->sample_count++;
-
-    if (detect_shake(app, now)) {
-        app->last_shake_ms = now;
-        g_idle_add(on_shake, app);
+    for (;;) {
+        gboolean eof = !fgets(line, sizeof(line), f);
+        if (eof || line[0] == '\n') {
+            char *ev = handlers[0] ? strstr(handlers, "event") : NULL;
+            if (ev && n < max_fds) {
+                char path[64];
+                snprintf(path, sizeof(path), "/dev/input/event%d", atoi(ev + 5));
+                int fd = open(path, O_RDONLY | O_NONBLOCK);
+                if (fd >= 0) fds[n++] = fd;
+            }
+            handlers[0] = '\0';
+            if (eof) break;
+            continue;
+        }
+        if (strncmp(line, "H: Handlers=", 12) == 0 && strstr(line, "mouse"))
+            g_strlcpy(handlers, line + 12, sizeof(handlers));
     }
-done:
-    XRecordFreeData(data);
+    fclose(f);
+    return n;
 }
 
 static void *record_thread(void *arg) {
     App *app = (App *)arg;
-    XRecordEnableContext(app->data_dpy, app->record_ctx,
-                         record_callback, (XPointer)app);
+    struct pollfd pfds[MAX_MOUSE_DEVS];
+    for (int i = 0; i < app->mouse_fd_count; i++)
+        pfds[i] = (struct pollfd){ .fd = app->mouse_fds[i], .events = POLLIN };
+
+    while (g_atomic_int_get(&app->running)) {
+        if (poll(pfds, (nfds_t)app->mouse_fd_count, 200) <= 0) continue;
+
+        for (int i = 0; i < app->mouse_fd_count; i++) {
+            if (!(pfds[i].revents & POLLIN)) continue;
+            struct input_event ev;
+            ssize_t n;
+            while ((n = read(pfds[i].fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
+                if (ev.type != EV_REL || ev.code != REL_X) continue;
+
+                app->x_acc += ev.value;
+                gint64 now = g_get_monotonic_time() / 1000;
+                int idx = app->sample_head;
+                app->samples[idx] = (Sample){ now, (gint16)app->x_acc };
+                app->sample_head  = (idx + 1) % SAMPLE_MAX;
+                if (app->sample_count < SAMPLE_MAX) app->sample_count++;
+
+                if (detect_shake(app, now)) {
+                    app->last_shake_ms = now;
+                    g_idle_add(on_shake, app);
+                }
+            }
+        }
+    }
     return NULL;
 }
 
 static gboolean setup_record(App *app) {
-    int major, minor;
-    if (!XRecordQueryVersion(app->grab_dpy, &major, &minor)) return FALSE;
-
-    app->data_dpy = XOpenDisplay(NULL);
-    if (!app->data_dpy) return FALSE;
-
-    XRecordRange *range = XRecordAllocRange();
-    range->device_events.first = MotionNotify;
-    range->device_events.last  = MotionNotify;
-    XRecordClientSpec client = XRecordAllClients;
-    app->record_ctx = XRecordCreateContext(
-        app->grab_dpy, 0, &client, 1, &range, 1);
-    XFree(range);
-
-    if (!app->record_ctx) { XCloseDisplay(app->data_dpy); return FALSE; }
-    XSync(app->grab_dpy, False);
-    return TRUE;
+    app->mouse_fd_count = scan_mouse_devices(app->mouse_fds, MAX_MOUSE_DEVS);
+    return app->mouse_fd_count > 0;
 }
 
 /* ── Overlay / ungrab ────────────────────────────────────────────────────── */
@@ -525,9 +549,14 @@ int main(int argc, char **argv) {
     app.big_cursor = cursor_create(app.grab_dpy, app.cfg.cursor_size);
 
     if (!setup_record(&app)) {
-        g_printerr("XRecord extension not available (need X11 session)\n");
+        g_printerr("No accessible mouse device found under /dev/input.\n"
+                   "Check that the mouse-finder udev rule is installed "
+                   "(re-run 'sudo apt install --reinstall ./mouse-finder_*.deb'\n"
+                   "or add your user to the 'input' group and re-login), "
+                   "then reconnect the mouse.\n");
         return 1;
     }
+    g_atomic_int_set(&app.running, 1);
     pthread_create(&app.record_tid, NULL, record_thread, &app);
 
     setup_indicator_icon();
@@ -542,11 +571,9 @@ int main(int argc, char **argv) {
     gtk_main();
 
     /* Cleanup */
-    XRecordDisableContext(app.grab_dpy, app.record_ctx);
-    XFlush(app.grab_dpy);
+    g_atomic_int_set(&app.running, 0);
     pthread_join(app.record_tid, NULL);
-    XRecordFreeContext(app.grab_dpy, app.record_ctx);
-    XCloseDisplay(app.data_dpy);
+    for (int i = 0; i < app.mouse_fd_count; i++) close(app.mouse_fds[i]);
     XFreeCursor(app.grab_dpy, app.big_cursor);
     XCloseDisplay(app.grab_dpy);
     return 0;
