@@ -6,8 +6,8 @@ Shake the mouse left and right — the cursor temporarily enlarges to 128 px so 
 
 ## Features
 
-- Shake detection via direct `/dev/input` reads (evdev, event-driven, ~0.1% CPU at idle) — works under X11 and Wayland alike, including Ubuntu 26+ where GDM no longer offers an X11 session
-- Cursor enlargement via a fullscreen InputOnly overlay — works over any window without stealing input
+- Shake detection via direct `/dev/input` reads (evdev, event-driven, ~0.1% CPU at idle) — works under X11 and Wayland alike, including Ubuntu 26+ where GDM no longer offers an X11 session. Mice (relative motion) and touchpads (absolute motion) both supported
+- Cursor enlargement on GNOME via the `org.gnome.desktop.interface cursor-size` setting — the compositor redraws the pointer, so it works on Wayland. Non-GNOME X11 falls back to a fullscreen InputOnly overlay
 - System tray icon with click menu (left or right button)
 - Settings dialog: cursor size, show duration, shake sensitivity
 - Autostart toggle (writes `~/.config/autostart/mouse-finder.desktop`)

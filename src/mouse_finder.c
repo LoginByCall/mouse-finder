@@ -51,6 +51,9 @@ typedef struct App {
     int             mouse_fds[MAX_MOUSE_DEVS];
     int             mouse_fd_count;
     volatile gint   running;        /* g_atomic flag, set 0 to stop record thread */
+    /* GNOME: enlarge via org.gnome.desktop.interface cursor-size (works on Wayland) */
+    GSettings      *iface;
+    int             saved_cursor_size;
     /* GTK */
     AppIndicator   *indicator;
     GtkWidget      *i_auto;         /* autostart menu item — label updated on show */
@@ -279,9 +282,15 @@ static void *record_thread(void *arg) {
             struct input_event ev;
             ssize_t n;
             while ((n = read(pfds[i].fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
-                if (ev.type != EV_REL || ev.code != REL_X) continue;
+                /* ponytail: touchpads report ABS_X, mice REL_X; one shared x_acc,
+                   buffer reset on finger-down hides the abs/rel jump. */
+                if (ev.type == EV_KEY && ev.code == BTN_TOUCH && ev.value == 1) {
+                    app->sample_count = 0; continue;
+                }
+                if (ev.type == EV_ABS && ev.code == ABS_X) app->x_acc = ev.value;
+                else if (ev.type == EV_REL && ev.code == REL_X) app->x_acc += ev.value;
+                else continue;
 
-                app->x_acc += ev.value;
                 gint64 now = g_get_monotonic_time() / 1000;
                 int idx = app->sample_head;
                 app->samples[idx] = (Sample){ now, (gint16)app->x_acc };
@@ -306,7 +315,19 @@ static gboolean setup_record(App *app) {
 /* ── Overlay / ungrab ────────────────────────────────────────────────────── */
 static gboolean on_shake(gpointer ud) {
     App *app = (App *)ud;
+    if (g_getenv("MOUSE_FINDER_DEBUG")) g_printerr("shake detected\n");
     if (app->grabbed) return G_SOURCE_REMOVE;
+
+    if (app->iface) {
+        /* ponytail: GNOME re-renders the pointer on cursor-size change, Wayland included.
+           If saved == ours, a previous run died mid-shake: fall back to GNOME default. */
+        app->saved_cursor_size = g_settings_get_int(app->iface, "cursor-size");
+        if (app->saved_cursor_size == app->cfg.cursor_size) app->saved_cursor_size = 24;
+        g_settings_set_int(app->iface, "cursor-size", app->cfg.cursor_size);
+        app->grabbed = TRUE;
+        g_timeout_add((guint)app->cfg.show_duration, ungrab, app);
+        return G_SOURCE_REMOVE;
+    }
 
     /* ponytail: InputOnly overlay instead of XGrabPointer —
        XGrabPointer fails when GNOME Shell holds its own grab;
@@ -334,6 +355,11 @@ static gboolean on_shake(gpointer ud) {
 
 static gboolean ungrab(gpointer ud) {
     App *app = (App *)ud;
+    if (app->iface) {
+        g_settings_set_int(app->iface, "cursor-size", app->saved_cursor_size);
+        app->grabbed = FALSE;
+        return G_SOURCE_REMOVE;
+    }
     XDestroyWindow(app->grab_dpy, app->overlay);
     XFlush(app->grab_dpy);
     app->overlay = 0;
@@ -547,6 +573,9 @@ int main(int argc, char **argv) {
     if (!app.grab_dpy) { g_printerr("Cannot open X display\n"); return 1; }
     app.root       = DefaultRootWindow(app.grab_dpy);
     app.big_cursor = cursor_create(app.grab_dpy, app.cfg.cursor_size);
+    if (g_settings_schema_source_lookup(g_settings_schema_source_get_default(),
+                                        "org.gnome.desktop.interface", TRUE))
+        app.iface = g_settings_new("org.gnome.desktop.interface");
 
     if (!setup_record(&app)) {
         g_printerr("No accessible mouse device found under /dev/input.\n"
@@ -571,6 +600,7 @@ int main(int argc, char **argv) {
     gtk_main();
 
     /* Cleanup */
+    if (app.grabbed) ungrab(&app);
     g_atomic_int_set(&app.running, 0);
     pthread_join(app.record_tid, NULL);
     for (int i = 0; i < app.mouse_fd_count; i++) close(app.mouse_fds[i]);
