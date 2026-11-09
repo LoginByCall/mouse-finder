@@ -21,7 +21,7 @@
 #include <linux/input.h>
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
-#define SAMPLE_MAX     64
+#define SAMPLE_MAX     256  /* ~2 s at 125 Hz, must cover WINDOW_MS */
 #define WINDOW_MS      800
 #define COOLDOWN_MS    1000
 #define MAX_MOUSE_DEVS 16
