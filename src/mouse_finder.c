@@ -72,7 +72,7 @@ static char *cfg_path(void) {
 }
 
 static void settings_load(Settings *s) {
-    *s = (Settings){ 128, 1500, 4, 500 };
+    *s = (Settings){ 128, 1500, 3, 500 };  /* ponytail: 3 reversals — touchpad shakes are slower than mouse (measured 2026-11-09) */
     GKeyFile *kf = g_key_file_new();
     char *path = cfg_path();
     if (g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL)) {
