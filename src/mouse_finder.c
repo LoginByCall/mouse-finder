@@ -490,7 +490,7 @@ static void show_about(App *app) {
     (void)app;
     GtkWidget *dlg = gtk_about_dialog_new();
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dlg), "Mouse Finder");
-    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dlg), "1.0");
+    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dlg), "1.1");
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dlg), L->about_comments);
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dlg), "© 2026 Alexander Rozhkov");
     gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dlg), GTK_LICENSE_MIT_X11);
