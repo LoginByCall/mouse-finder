@@ -47,7 +47,7 @@ try:
     assert c1 - c0 < 0.3, f"busy loop after unplug: {c1 - c0:.2f} s CPU in 3 s"
 
     ui = UInput(CAPS, name="mf-test-mouse")  # re-plug
-    time.sleep(3)  # rescan period is 2 s
+    time.sleep(3)  # inotify picks it up at once; margin for udev ACL
     time.sleep(1.2)  # cooldown
     shake(ui); time.sleep(0.5)
     assert shakes(log) == 2, "re-plugged device: shake not detected"

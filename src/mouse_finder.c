@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <linux/input.h>
+#include <sys/inotify.h>
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
 #define SAMPLE_MAX     256  /* ~2 s at 125 Hz, must cover WINDOW_MS */
@@ -51,9 +52,8 @@ typedef struct App {
     gint64          last_shake_ms;
     gint32          x_acc;          /* running relative-X position, evdev */
     /* evdev mouse sources */
-    struct pollfd   pfds[MAX_MOUSE_DEVS];  /* fd -1 = free slot, poll() skips it */
+    struct pollfd   pfds[MAX_MOUSE_DEVS + 1]; /* fd -1 = free slot; last = inotify on /dev/input */
     int             pfd_ev[MAX_MOUSE_DEVS]; /* N of /dev/input/eventN in that slot */
-    volatile gint   running;        /* g_atomic flag, set 0 to stop record thread */
     /* GNOME: enlarge via org.gnome.desktop.interface cursor-size (works on Wayland) */
     GSettings      *iface;
     int             saved_cursor_size;
@@ -297,13 +297,28 @@ static int open_mouse_count(const App *app) {
 static void *record_thread(void *arg) {
     App *app = (App *)arg;
     struct pollfd *pfds = app->pfds;
-    gint64 next_scan = 0;
+    /* Hotplug via inotify on /dev/input, not periodic rescans: the thread sleeps
+       until input or a device change (0 idle wakeups). IN_ATTRIB because udev
+       grants the uaccess ACL after the node appears — open() may only work then. */
+    int ino = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (ino >= 0 && inotify_add_watch(ino, "/dev/input", IN_CREATE | IN_ATTRIB) < 0) {
+        close(ino);
+        ino = -1;
+    }
+    pfds[MAX_MOUSE_DEVS] = (struct pollfd){ .fd = ino, .events = POLLIN };
+    int timeout = ino >= 0 ? -1 : 2000;   /* no inotify: rescan every 2 s */
 
-    while (g_atomic_int_get(&app->running)) {
-        gint64 t = g_get_monotonic_time() / 1000;
-        if (t >= next_scan) { scan_mouse_devices(app); next_scan = t + 2000; }
-
-        if (poll(pfds, MAX_MOUSE_DEVS, 200) <= 0) continue;
+    /* ponytail: no stop flag — the thread lives until process exit, the kernel
+       closes its fds. */
+    for (;;) {
+        int r = poll(pfds, MAX_MOUSE_DEVS + 1, timeout);
+        if (r < 0) continue;                       /* EINTR */
+        if (r == 0) { scan_mouse_devices(app); continue; }
+        if (ino >= 0 && pfds[MAX_MOUSE_DEVS].revents) {
+            char buf[4096];
+            while (read(ino, buf, sizeof(buf)) > 0) {}
+            scan_mouse_devices(app);
+        }
 
         for (int i = 0; i < MAX_MOUSE_DEVS; i++) {
             if (pfds[i].fd < 0 || !pfds[i].revents) continue;
@@ -339,7 +354,7 @@ static void *record_thread(void *arg) {
             }
         }
     }
-    return NULL;
+    return NULL;   /* unreachable */
 }
 
 static gboolean setup_record(App *app) {
@@ -380,6 +395,7 @@ static gboolean on_x_event(gint fd, GIOCondition cond, gpointer ud) {
     while (XPending(app->grab_dpy)) {
         XEvent ev;
         XNextEvent(app->grab_dpy, &ev);
+        if (g_getenv("MOUSE_FINDER_DEBUG")) g_printerr("x event %d\n", ev.type);
         if (ev.type == ButtonPress) clicked = TRUE;
     }
     if (clicked && app->grabbed) {
@@ -809,7 +825,6 @@ int main(int argc, char **argv) {
                    "then reconnect the mouse.\n");
         return 1;
     }
-    g_atomic_int_set(&app.running, 1);
     pthread_create(&app.record_tid, NULL, record_thread, &app);
 
     setup_indicator_icon();
@@ -825,9 +840,7 @@ int main(int argc, char **argv) {
 
     /* Cleanup */
     if (app.grabbed) ungrab(&app);
-    g_atomic_int_set(&app.running, 0);
-    pthread_join(app.record_tid, NULL);
-    for (int i = 0; i < MAX_MOUSE_DEVS; i++) if (app.pfds[i].fd >= 0) close(app.pfds[i].fd);
+    /* evdev fds stay open: the record thread still polls them; exit closes them */
     XFreeCursor(app.grab_dpy, app.big_cursor);
     XCloseDisplay(app.grab_dpy);
     return 0;
