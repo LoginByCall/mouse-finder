@@ -28,7 +28,7 @@
 
 /* ── Types ───────────────────────────────────────────────────────────────── */
 typedef struct { int cursor_size, show_duration, min_reversals, min_speed; } Settings;
-typedef struct { gint64 t_ms; gint16 x; }                                    Sample;
+typedef struct { gint64 t_ms; gint32 x; }                                    Sample;
 
 typedef struct App {
     /* X11 (cursor + overlay only — input no longer read via X11) */
@@ -48,8 +48,8 @@ typedef struct App {
     gint64          last_shake_ms;
     gint32          x_acc;          /* running relative-X position, evdev */
     /* evdev mouse sources */
-    int             mouse_fds[MAX_MOUSE_DEVS];
-    int             mouse_fd_count;
+    struct pollfd   pfds[MAX_MOUSE_DEVS];  /* fd -1 = free slot, poll() skips it */
+    int             pfd_ev[MAX_MOUSE_DEVS]; /* N of /dev/input/eventN in that slot */
     volatile gint   running;        /* g_atomic flag, set 0 to stop record thread */
     /* GNOME: enlarge via org.gnome.desktop.interface cursor-size (works on Wayland) */
     GSettings      *iface;
@@ -239,23 +239,35 @@ static gboolean detect_shake(App *app, gint64 now_ms) {
 
 /* ponytail: pointer devices found via kernel's own "mouseN" legacy handler
    classification in /proc/bus/input/devices — avoids adding a libudev dep
-   just to ask udev the same question. */
-static int scan_mouse_devices(int *fds, int max_fds) {
+   just to ask udev the same question. Opens only devices not already open;
+   called periodically for hotplug (re-plugged / BT mice, resume). */
+static int scan_mouse_devices(App *app) {
     FILE *f = fopen("/proc/bus/input/devices", "r");
     if (!f) return 0;
 
     char line[512], handlers[256] = "";
-    int n = 0;
+    int opened = 0;
 
     for (;;) {
         gboolean eof = !fgets(line, sizeof(line), f);
         if (eof || line[0] == '\n') {
             char *ev = handlers[0] ? strstr(handlers, "event") : NULL;
-            if (ev && n < max_fds) {
-                char path[64];
-                snprintf(path, sizeof(path), "/dev/input/event%d", atoi(ev + 5));
-                int fd = open(path, O_RDONLY | O_NONBLOCK);
-                if (fd >= 0) fds[n++] = fd;
+            if (ev) {
+                int num = atoi(ev + 5), slot = -1;
+                for (int i = 0; i < MAX_MOUSE_DEVS; i++) {
+                    if (app->pfds[i].fd >= 0 && app->pfd_ev[i] == num) { slot = -2; break; }
+                    if (app->pfds[i].fd < 0 && slot == -1) slot = i;
+                }
+                if (slot >= 0) {
+                    char path[64];
+                    snprintf(path, sizeof(path), "/dev/input/event%d", num);
+                    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+                    if (fd >= 0) {
+                        app->pfds[slot] = (struct pollfd){ .fd = fd, .events = POLLIN };
+                        app->pfd_ev[slot] = num;
+                        opened++;
+                    }
+                }
             }
             handlers[0] = '\0';
             if (eof) break;
@@ -265,20 +277,35 @@ static int scan_mouse_devices(int *fds, int max_fds) {
             g_strlcpy(handlers, line + 12, sizeof(handlers));
     }
     fclose(f);
+    return opened;
+}
+
+static int open_mouse_count(const App *app) {
+    int n = 0;
+    for (int i = 0; i < MAX_MOUSE_DEVS; i++) n += app->pfds[i].fd >= 0;
     return n;
 }
 
 static void *record_thread(void *arg) {
     App *app = (App *)arg;
-    struct pollfd pfds[MAX_MOUSE_DEVS];
-    for (int i = 0; i < app->mouse_fd_count; i++)
-        pfds[i] = (struct pollfd){ .fd = app->mouse_fds[i], .events = POLLIN };
+    struct pollfd *pfds = app->pfds;
+    gint64 next_scan = 0;
 
     while (g_atomic_int_get(&app->running)) {
-        if (poll(pfds, (nfds_t)app->mouse_fd_count, 200) <= 0) continue;
+        gint64 t = g_get_monotonic_time() / 1000;
+        if (t >= next_scan) { scan_mouse_devices(app); next_scan = t + 2000; }
 
-        for (int i = 0; i < app->mouse_fd_count; i++) {
-            if (!(pfds[i].revents & POLLIN)) continue;
+        if (poll(pfds, MAX_MOUSE_DEVS, 200) <= 0) continue;
+
+        for (int i = 0; i < MAX_MOUSE_DEVS; i++) {
+            if (pfds[i].fd < 0 || !pfds[i].revents) continue;
+            /* Unplugged device: evdev reports POLLHUP|POLLERR forever. Without
+               closing it, poll() returns at once on every call — 100% CPU. */
+            if (pfds[i].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+                close(pfds[i].fd);
+                pfds[i].fd = -1;
+                continue;
+            }
             struct input_event ev;
             ssize_t n;
             while ((n = read(pfds[i].fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
@@ -293,7 +320,7 @@ static void *record_thread(void *arg) {
 
                 gint64 now = g_get_monotonic_time() / 1000;
                 int idx = app->sample_head;
-                app->samples[idx] = (Sample){ now, (gint16)app->x_acc };
+                app->samples[idx] = (Sample){ now, app->x_acc };
                 app->sample_head  = (idx + 1) % SAMPLE_MAX;
                 if (app->sample_count < SAMPLE_MAX) app->sample_count++;
 
@@ -308,8 +335,9 @@ static void *record_thread(void *arg) {
 }
 
 static gboolean setup_record(App *app) {
-    app->mouse_fd_count = scan_mouse_devices(app->mouse_fds, MAX_MOUSE_DEVS);
-    return app->mouse_fd_count > 0;
+    for (int i = 0; i < MAX_MOUSE_DEVS; i++) app->pfds[i].fd = -1;
+    scan_mouse_devices(app);
+    return open_mouse_count(app) > 0;
 }
 
 /* ── Overlay / ungrab ────────────────────────────────────────────────────── */
@@ -603,7 +631,7 @@ int main(int argc, char **argv) {
     if (app.grabbed) ungrab(&app);
     g_atomic_int_set(&app.running, 0);
     pthread_join(app.record_tid, NULL);
-    for (int i = 0; i < app.mouse_fd_count; i++) close(app.mouse_fds[i]);
+    for (int i = 0; i < MAX_MOUSE_DEVS; i++) if (app.pfds[i].fd >= 0) close(app.pfds[i].fd);
     XFreeCursor(app.grab_dpy, app.big_cursor);
     XCloseDisplay(app.grab_dpy);
     return 0;
