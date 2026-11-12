@@ -10,6 +10,7 @@ build/
 # binary installed into pkg template by `make deb`
 pkg/usr/bin/mouse-finder
 
-# internal
+# internal (working notes, describe the owner's machine)
 CLAUDE.md
 TZ.md
+TASK_PASSPORT.md

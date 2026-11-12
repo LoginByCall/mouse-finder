@@ -6,10 +6,21 @@ Shake the mouse left and right — the cursor temporarily enlarges to 128 px so 
 
 ## Features
 
-- Shake detection via direct `/dev/input` reads (evdev, event-driven, ~0.1% CPU at idle) — works under X11 and Wayland alike, including Ubuntu 26+ where GDM no longer offers an X11 session. Mice (relative motion) and touchpads (absolute motion) both supported
-- Cursor enlargement on GNOME via the `org.gnome.desktop.interface cursor-size` setting — the compositor redraws the pointer, so it works on Wayland. Non-GNOME X11 falls back to a fullscreen InputOnly overlay
+- Shake detection via direct `/dev/input` reads (evdev, event-driven) — works under X11 and
+  Wayland alike, including Ubuntu 26+ where GDM no longer offers an X11 session. Mice
+  (relative motion) and touchpads (absolute motion) are both supported
+- Mouse hotplug: devices plugged in later (USB, Bluetooth, after suspend) are picked up
+  automatically, removed ones are released
+- Cursor enlargement visible over every window, Wayland-native ones included:
+  - GNOME `org.gnome.desktop.interface cursor-size` — for everything the compositor draws
+    (GNOME Shell UI, window borders)
+  - a transparent fullscreen XWayland overlay with the big cursor for the duration of the
+    effect — for apps that draw their own cursor and would otherwise pick up the new size
+    only after the pointer re-enters them. The first click during the effect closes it early
 - System tray icon with click menu (left or right button)
-- Settings dialog: cursor size, show duration, shake sensitivity
+- Settings dialog: cursor size, show duration, shake sensitivity, with a **?** help window
+  explaining every parameter in 7 languages (English, Русский, 中文, Español, Français,
+  Deutsch, Italiano)
 - Autostart toggle (writes `~/.config/autostart/mouse-finder.desktop`)
 - Config saved to `~/.config/mouse-finder.ini`
 
@@ -52,9 +63,9 @@ Use the **Autostart** toggle in the tray menu to launch automatically on login.
 ## Usage
 
 1. Run `mouse-finder` — a white cursor arrow icon appears in the system tray.
-2. Quickly shake the mouse left and right (3–4 reversals). The cursor grows large for ~1.5 s, then returns to normal.
+2. Quickly shake the mouse (or your finger on the touchpad) left and right. The cursor grows large for ~1.5 s, then returns to normal.
 3. Click the tray icon:
-   - **Settings…** — open settings dialog
+   - **Settings…** — open settings dialog; the **?** button opens the help
    - **Autostart: ON/OFF** — toggle launch on login
    - **About…** — version and description
    - **Quit** — exit
@@ -66,7 +77,13 @@ Use the **Autostart** toggle in the tray menu to launch automatically on login.
 | Cursor size | 128 px | 32–256 px |
 | Show duration | 1500 ms | 500–3000 ms |
 | Reversals to detect | 3 | 2–6 |
-| Min speed | 500 px/s | 100–1000 px/s |
+| Min speed | 300 | 100–1000 |
+
+Only horizontal movement within the last 0.8 s counts; after a trigger the next one is
+possible no sooner than 1 s later. Min speed is measured in the device's own units (sensor
+counts for a mouse, touchpad coordinates for a touchpad), not screen pixels. If shaking does
+not trigger, lower *Reversals* or *Min speed*; if it triggers by accident, raise them
+(2 reversals suits a touchpad, 3 a mouse).
 
 Settings take effect immediately without restart.
 
@@ -74,9 +91,10 @@ Settings take effect immediately without restart.
 
 | Metric | Value |
 |--------|-------|
-| Binary size | ~35 KB |
-| RSS at idle | ~15 MB |
-| CPU at idle | ~0.1% (evdev, event-driven) |
+| Binary size | ~50 KB |
+| Private memory | ~11 MB (almost all GTK, for the tray menu and dialogs) |
+| CPU / wakeups at idle | 0% / 0 — the input thread sleeps until input or a device change (inotify) |
+| Memory over time | flat (150 shake cycles: +12 KB) |
 
 ## Troubleshooting
 
@@ -84,6 +102,18 @@ If shaking doesn't enlarge the cursor, mouse-finder likely can't read `/dev/inpu
 from a terminal — it prints a diagnostic if no mouse device is accessible. Reinstalling the
 `.deb` re-applies the udev rule; a manual `input`-group membership needs a re-login to take
 effect.
+
+## Tests
+
+Regression tests drive a virtual mouse through `/dev/uinput` (needs a graphical session,
+`python3-evdev`, `python3-xlib`, write access to `/dev/uinput`). Stop the running
+mouse-finder first — both instances would react. They move the real cursor briefly.
+
+```bash
+make binary
+python3 tests/hotplug_test.py   # detect, no busy loop after unplug, re-plugged mouse works
+python3 tests/overlay_test.py   # pointer is over the overlay during the effect, cursor-size restored
+```
 
 ## License
 
