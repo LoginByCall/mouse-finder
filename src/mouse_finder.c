@@ -109,7 +109,7 @@ typedef struct {
     const char *dlg_title, *dlg_cancel, *dlg_apply;
     const char *lbl_cursor, *lbl_duration, *lbl_reversals, *lbl_speed;
     const char *about_comments;
-    const char *help_title, *help_text;   /* Pango markup */
+    const char *help_title, *help_close;
 } Lang;
 
 static const Lang L_RU = {
@@ -118,30 +118,7 @@ static const Lang L_RU = {
     "Размер курсора (px)", "Длительность (мс)", "Реверсов для тряски", "Мин. скорость (px/s)",
     "Встряхни мышью — курсор увеличится и станет заметным.",
     "Mouse Finder — Справка",
-    "<b>Как это работает</b>\n"
-    "Быстро поводите мышью или пальцем по тачпаду <b>влево-вправо</b>. Когда программа "
-    "замечает тряску, курсор на время увеличивается, чтобы его было легко найти на экране. "
-    "Учитывается только горизонтальное движение и только последние 0,8 с. "
-    "После срабатывания следующее возможно не раньше чем через 1 с.\n\n"
-    "<b>Размер курсора (px)</b> — каким станет курсор во время показа. "
-    "Обычный курсор — 24 px. Чем больше значение, тем заметнее курсор, "
-    "особенно на большом или 4K-мониторе. По умолчанию 128.\n\n"
-    "<b>Длительность (мс)</b> — сколько миллисекунд курсор остаётся увеличенным, "
-    "потом возвращается к обычному размеру. 1000 мс = 1 с. По умолчанию 1500.\n\n"
-    "<b>Реверсов для тряски</b> — сколько раз движение должно сменить направление "
-    "(влево→вправо или вправо→влево) за 0,8 с, чтобы это считалось тряской. "
-    "Меньше — срабатывает легче, но чаще случайно при обычной работе; "
-    "больше — нужна более энергичная тряска. "
-    "Для тачпада удобно 2, для мыши — 3. По умолчанию 3.\n\n"
-    "<b>Мин. скорость (px/s)</b> — движения медленнее этой скорости тряской не считаются, "
-    "так что обычное перемещение курсора её не вызывает. Если движение замедлилось "
-    "дольше чем на 0,2 с, счёт смен направления начинается заново. "
-    "Скорость меряется в единицах самого устройства (у мыши — шаги датчика, у тачпада — "
-    "его координаты), а не в пикселях экрана, поэтому значение зависит от модели. "
-    "Меньше — срабатывает от более медленной тряски, но и чаще случайно. По умолчанию 300.\n\n"
-    "<b>Подбор</b>: если тряска не срабатывает, уменьшите «Реверсов» или «Мин. скорость»; "
-    "если срабатывает случайно — увеличьте их.\n\n"
-    "Настройки хранятся в ~/.config/mouse-finder.ini."
+    "Закрыть"
 };
 static const Lang L_EN = {
     "Settings…", "Autostart: ON ✓", "Autostart: OFF", "About…", "Quit",
@@ -149,28 +126,7 @@ static const Lang L_EN = {
     "Cursor size (px)", "Duration (ms)", "Reversals to detect", "Min speed (px/s)",
     "Shake the mouse — the cursor enlarges to help you spot it.",
     "Mouse Finder — Help",
-    "<b>How it works</b>\n"
-    "Quickly move the mouse, or your finger on the touchpad, <b>left and right</b>. When a "
-    "shake is detected, the cursor is enlarged for a moment so it is easy to spot. "
-    "Only horizontal movement over the last 0.8 s is taken into account. "
-    "After a trigger the next one is possible no sooner than 1 s later.\n\n"
-    "<b>Cursor size (px)</b> — how big the cursor becomes while shown. A normal "
-    "cursor is 24 px. Larger is easier to spot, especially on big or 4K screens. Default 128.\n\n"
-    "<b>Duration (ms)</b> — how long the cursor stays enlarged before returning to "
-    "normal size. 1000 ms = 1 s. Default 1500.\n\n"
-    "<b>Reversals to detect</b> — how many times the movement must change direction "
-    "(left→right or right→left) within 0.8 s to count as a shake. Fewer triggers "
-    "more easily but also by accident during normal work; more needs a more vigorous shake. "
-    "2 suits a touchpad, 3 a mouse. Default 3.\n\n"
-    "<b>Min speed (px/s)</b> — movement slower than this is not counted as shaking, so "
-    "ordinary cursor movement does not trigger it. If movement stays slow for more than "
-    "0.2 s, the direction-change count starts over. Speed is measured in the device's own "
-    "units (sensor counts for a mouse, touchpad coordinates for a touchpad), not screen "
-    "pixels, so the right value depends on the device. Lower triggers on slower shakes, "
-    "but also more often by accident. Default 300.\n\n"
-    "<b>Tuning</b>: if shaking does not trigger, lower Reversals or Min speed; if it "
-    "triggers by accident, raise them.\n\n"
-    "Settings are stored in ~/.config/mouse-finder.ini."
+    "Close"
 };
 static const Lang *L = &L_EN;
 
@@ -492,6 +448,161 @@ static void apply_settings(App *app, const Settings *s) {
     app->cfg = *s;
 }
 
+/* ── Help: 7 languages, switchable inside the help window ─────────────── */
+typedef struct { const char *name, *code, *text; } HelpLang;   /* text: Pango markup */
+static const HelpLang HELP[] = {
+  { "English", "en",
+    "<b>How it works</b>\n"
+    "Quickly move the mouse, or your finger on the touchpad, <b>left and right</b>. When a shake is detected, the cursor is enlarged for a moment so it is easy to spot. Only horizontal movement over the last 0.8 s is taken into account. After a trigger the next one is possible no sooner than 1 s later.\n"
+    "\n"
+    "<b>Cursor size (px)</b> — how big the cursor becomes while shown. A normal cursor is 24 px. Larger is easier to spot, especially on big or 4K screens. Default 128.\n"
+    "\n"
+    "<b>Duration (ms)</b> — how long the cursor stays enlarged before returning to normal size. 1000 ms = 1 s. Default 1500.\n"
+    "\n"
+    "<b>Reversals to detect</b> — how many times the movement must change direction (left→right or right→left) within 0.8 s to count as a shake. Fewer triggers more easily but also by accident during normal work; more needs a more vigorous shake. 2 suits a touchpad, 3 a mouse. Default 3.\n"
+    "\n"
+    "<b>Min speed (px/s)</b> — movement slower than this is not counted as shaking, so ordinary cursor movement does not trigger it. If movement stays slow for more than 0.2 s, the direction-change count starts over. Speed is measured in the device's own units (sensor counts for a mouse, touchpad coordinates for a touchpad), not screen pixels, so the right value depends on the device. Lower triggers on slower shakes, but also more often by accident. Default 300.\n"
+    "\n"
+    "<b>Tuning</b>: if shaking does not trigger, lower Reversals or Min speed; if it triggers by accident, raise them.\n"
+    "\n"
+    "Settings are stored in ~/.config/mouse-finder.ini." },
+  { "Русский", "ru",
+    "<b>Как это работает</b>\n"
+    "Быстро поводите мышью или пальцем по тачпаду <b>влево-вправо</b>. Когда программа замечает тряску, курсор на время увеличивается, чтобы его было легко найти на экране. Учитывается только горизонтальное движение и только последние 0,8 с. После срабатывания следующее возможно не раньше чем через 1 с.\n"
+    "\n"
+    "<b>Размер курсора (px)</b> — каким станет курсор во время показа. Обычный курсор — 24 px. Чем больше значение, тем заметнее курсор, особенно на большом или 4K-мониторе. По умолчанию 128.\n"
+    "\n"
+    "<b>Длительность (мс)</b> — сколько миллисекунд курсор остаётся увеличенным, потом возвращается к обычному размеру. 1000 мс = 1 с. По умолчанию 1500.\n"
+    "\n"
+    "<b>Реверсов для тряски</b> — сколько раз движение должно сменить направление (влево→вправо или вправо→влево) за 0,8 с, чтобы это считалось тряской. Меньше — срабатывает легче, но чаще случайно при обычной работе; больше — нужна более энергичная тряска. Для тачпада удобно 2, для мыши — 3. По умолчанию 3.\n"
+    "\n"
+    "<b>Мин. скорость (px/s)</b> — движения медленнее этой скорости тряской не считаются, так что обычное перемещение курсора её не вызывает. Если движение замедлилось дольше чем на 0,2 с, счёт смен направления начинается заново. Скорость меряется в единицах самого устройства (у мыши — шаги датчика, у тачпада — его координаты), а не в пикселях экрана, поэтому значение зависит от модели. Меньше — срабатывает от более медленной тряски, но и чаще случайно. По умолчанию 300.\n"
+    "\n"
+    "<b>Подбор</b>: если тряска не срабатывает, уменьшите «Реверсов» или «Мин. скорость»; если срабатывает случайно — увеличьте их.\n"
+    "\n"
+    "Настройки хранятся в ~/.config/mouse-finder.ini." },
+  { "中文", "zh",
+    "<b>工作原理</b>\n"
+    "快速<b>左右</b>移动鼠标，或在触控板上左右滑动手指。检测到晃动后，光标会暂时放大，便于在屏幕上找到它。只统计水平方向的移动，且只看最近 0.8 秒。触发一次后，至少 1 秒后才能再次触发。\n"
+    "\n"
+    "<b>光标大小</b>（Cursor size，px）— 显示时光标放大到的尺寸。普通光标为 24 px。数值越大越醒目，在大屏或 4K 显示器上尤其有用。默认 128。\n"
+    "\n"
+    "<b>持续时间</b>（Duration，ms）— 光标保持放大的毫秒数，之后恢复正常大小。1000 ms = 1 秒。默认 1500。\n"
+    "\n"
+    "<b>反向次数</b>（Reversals to detect）— 在 0.8 秒内移动方向需要改变多少次（左→右或右→左）才算晃动。数值越小越容易触发，但正常操作时也更容易误触发；数值越大，需要晃动得越用力。触控板建议 2，鼠标建议 3。默认 3。\n"
+    "\n"
+    "<b>最低速度</b>（Min speed，px/s）— 低于此速度的移动不计为晃动，因此普通的光标移动不会触发。如果移动变慢超过 0.2 秒，方向变化的计数会重新开始。速度以设备自身的单位计量（鼠标为传感器计数，触控板为其坐标），而不是屏幕像素，因此合适的数值取决于具体设备。数值越小，较慢的晃动也能触发，但误触发也会更多。默认 300。\n"
+    "\n"
+    "<b>调整建议</b>：如果晃动没有触发，请降低“反向次数”或“最低速度”；如果出现误触发，请提高它们。\n"
+    "\n"
+    "设置保存在 ~/.config/mouse-finder.ini。" },
+  { "Español", "es",
+    "<b>Cómo funciona</b>\n"
+    "Mueva rápidamente el ratón, o el dedo sobre el panel táctil, <b>de izquierda a derecha</b>. Cuando se detecta una sacudida, el cursor se agranda un momento para que sea fácil de encontrar. Solo se tiene en cuenta el movimiento horizontal de los últimos 0,8 s. Tras una activación, la siguiente no puede producirse antes de 1 s.\n"
+    "\n"
+    "<b>Tamaño del cursor</b> (Cursor size, px) — tamaño que alcanza el cursor mientras se muestra. Un cursor normal mide 24 px. Cuanto mayor, más visible, sobre todo en pantallas grandes o 4K. Por defecto 128.\n"
+    "\n"
+    "<b>Duración</b> (Duration, ms) — cuántos milisegundos permanece agrandado el cursor antes de volver a su tamaño normal. 1000 ms = 1 s. Por defecto 1500.\n"
+    "\n"
+    "<b>Cambios de dirección</b> (Reversals to detect) — cuántas veces debe cambiar de dirección el movimiento (izquierda→derecha o derecha→izquierda) en 0,8 s para contar como sacudida. Con menos se activa más fácilmente, pero también por accidente durante el trabajo normal; con más hace falta una sacudida más enérgica. 2 va bien para un panel táctil, 3 para un ratón. Por defecto 3.\n"
+    "\n"
+    "<b>Velocidad mínima</b> (Min speed, px/s) — el movimiento más lento que esto no cuenta como sacudida, así que mover el cursor con normalidad no la activa. Si el movimiento se mantiene lento más de 0,2 s, el recuento de cambios de dirección vuelve a empezar. La velocidad se mide en unidades propias del dispositivo (pasos del sensor en un ratón, coordenadas en un panel táctil), no en píxeles de pantalla, por lo que el valor adecuado depende del dispositivo. Un valor menor se activa con sacudidas más lentas, pero también más a menudo por accidente. Por defecto 300.\n"
+    "\n"
+    "<b>Ajuste</b>: si la sacudida no se activa, reduzca «Cambios de dirección» o «Velocidad mínima»; si se activa por accidente, auméntelos.\n"
+    "\n"
+    "La configuración se guarda en ~/.config/mouse-finder.ini." },
+  { "Français", "fr",
+    "<b>Fonctionnement</b>\n"
+    "Déplacez rapidement la souris, ou le doigt sur le pavé tactile, <b>de gauche à droite</b>. Lorsqu'une secousse est détectée, le curseur est agrandi un instant pour être facile à repérer. Seul le mouvement horizontal des 0,8 dernières secondes est pris en compte. Après un déclenchement, le suivant n'est possible qu'au bout d'une seconde.\n"
+    "\n"
+    "<b>Taille du curseur</b> (Cursor size, px) — taille du curseur pendant l'affichage. Un curseur normal fait 24 px. Plus il est grand, plus il est visible, surtout sur un grand écran ou un écran 4K. Par défaut 128.\n"
+    "\n"
+    "<b>Durée</b> (Duration, ms) — nombre de millisecondes pendant lesquelles le curseur reste agrandi avant de reprendre sa taille normale. 1000 ms = 1 s. Par défaut 1500.\n"
+    "\n"
+    "<b>Changements de direction</b> (Reversals to detect) — nombre de fois où le mouvement doit changer de sens (gauche→droite ou droite→gauche) en 0,8 s pour compter comme une secousse. Moins : déclenchement plus facile, mais aussi accidentel pendant le travail normal ; plus : il faut secouer plus énergiquement. 2 convient à un pavé tactile, 3 à une souris. Par défaut 3.\n"
+    "\n"
+    "<b>Vitesse minimale</b> (Min speed, px/s) — un mouvement plus lent n'est pas compté comme une secousse ; déplacer normalement le curseur ne la déclenche donc pas. Si le mouvement reste lent plus de 0,2 s, le comptage des changements de direction repart de zéro. La vitesse est mesurée dans les unités propres au périphérique (pas du capteur pour une souris, coordonnées pour un pavé tactile), et non en pixels d'écran : la bonne valeur dépend donc du périphérique. Plus bas : déclenchement avec des secousses plus lentes, mais aussi plus souvent par accident. Par défaut 300.\n"
+    "\n"
+    "<b>Réglage</b> : si la secousse ne se déclenche pas, baissez « Changements de direction » ou « Vitesse minimale » ; si elle se déclenche par accident, augmentez-les.\n"
+    "\n"
+    "Les réglages sont enregistrés dans ~/.config/mouse-finder.ini." },
+  { "Deutsch", "de",
+    "<b>So funktioniert es</b>\n"
+    "Bewegen Sie die Maus oder den Finger auf dem Touchpad schnell <b>nach links und rechts</b>. Wird ein Schütteln erkannt, wird der Mauszeiger kurz vergrößert, damit er leicht zu finden ist. Berücksichtigt wird nur die waagerechte Bewegung der letzten 0,8 s. Nach einer Auslösung ist die nächste frühestens nach 1 s möglich.\n"
+    "\n"
+    "<b>Zeigergröße</b> (Cursor size, px) — wie groß der Zeiger während der Anzeige wird. Ein normaler Zeiger ist 24 px groß. Je größer, desto auffälliger, besonders auf großen oder 4K-Bildschirmen. Standard 128.\n"
+    "\n"
+    "<b>Dauer</b> (Duration, ms) — wie viele Millisekunden der Zeiger vergrößert bleibt, bevor er zur normalen Größe zurückkehrt. 1000 ms = 1 s. Standard 1500.\n"
+    "\n"
+    "<b>Richtungswechsel</b> (Reversals to detect) — wie oft die Bewegung innerhalb von 0,8 s die Richtung wechseln muss (links→rechts oder rechts→links), damit es als Schütteln gilt. Weniger löst leichter aus, aber auch versehentlich bei normaler Arbeit; mehr erfordert kräftigeres Schütteln. 2 passt für ein Touchpad, 3 für eine Maus. Standard 3.\n"
+    "\n"
+    "<b>Mindestgeschwindigkeit</b> (Min speed, px/s) — langsamere Bewegungen zählen nicht als Schütteln, normales Bewegen des Zeigers löst also nichts aus. Bleibt die Bewegung länger als 0,2 s langsam, beginnt die Zählung der Richtungswechsel von vorn. Die Geschwindigkeit wird in den eigenen Einheiten des Geräts gemessen (Sensorschritte bei einer Maus, Koordinaten bei einem Touchpad), nicht in Bildschirmpixeln; der passende Wert hängt daher vom Gerät ab. Niedriger löst schon bei langsamerem Schütteln aus, aber auch häufiger versehentlich. Standard 300.\n"
+    "\n"
+    "<b>Einstellen</b>: Löst das Schütteln nicht aus, senken Sie „Richtungswechsel“ oder „Mindestgeschwindigkeit“; löst es versehentlich aus, erhöhen Sie sie.\n"
+    "\n"
+    "Die Einstellungen werden in ~/.config/mouse-finder.ini gespeichert." },
+  { "Italiano", "it",
+    "<b>Come funziona</b>\n"
+    "Muovi rapidamente il mouse, o il dito sul touchpad, <b>a destra e a sinistra</b>. Quando viene rilevato uno scuotimento, il cursore viene ingrandito per un momento, così è facile individuarlo. Conta solo il movimento orizzontale degli ultimi 0,8 s. Dopo un'attivazione, la successiva è possibile non prima di 1 s.\n"
+    "\n"
+    "<b>Dimensione del cursore</b> (Cursor size, px) — quanto diventa grande il cursore durante la visualizzazione. Un cursore normale è di 24 px. Più è grande, più è visibile, soprattutto su schermi grandi o 4K. Predefinito 128.\n"
+    "\n"
+    "<b>Durata</b> (Duration, ms) — per quanti millisecondi il cursore resta ingrandito prima di tornare alle dimensioni normali. 1000 ms = 1 s. Predefinito 1500.\n"
+    "\n"
+    "<b>Cambi di direzione</b> (Reversals to detect) — quante volte il movimento deve cambiare direzione (sinistra→destra o destra→sinistra) entro 0,8 s per essere considerato uno scuotimento. Meno: si attiva più facilmente, ma anche per errore durante il lavoro normale; più: serve uno scuotimento più energico. 2 è adatto a un touchpad, 3 a un mouse. Predefinito 3.\n"
+    "\n"
+    "<b>Velocità minima</b> (Min speed, px/s) — i movimenti più lenti non contano come scuotimento, quindi il normale spostamento del cursore non lo attiva. Se il movimento resta lento per più di 0,2 s, il conteggio dei cambi di direzione ricomincia da capo. La velocità è misurata nelle unità proprie del dispositivo (passi del sensore per un mouse, coordinate per un touchpad), non in pixel dello schermo, quindi il valore giusto dipende dal dispositivo. Più basso: si attiva anche con scuotimenti più lenti, ma anche più spesso per errore. Predefinito 300.\n"
+    "\n"
+    "<b>Regolazione</b>: se lo scuotimento non si attiva, abbassa «Cambi di direzione» o «Velocità minima»; se si attiva per errore, aumentali.\n"
+    "\n"
+    "Le impostazioni sono salvate in ~/.config/mouse-finder.ini." },
+};
+#define N_HELP ((int)(sizeof(HELP) / sizeof(HELP[0])))
+
+static void on_help_lang(GtkComboBox *cb, gpointer lbl) {
+    /* set_markup, not a "%s" markup constructor: those escape the argument */
+    gtk_label_set_markup(GTK_LABEL(lbl), HELP[gtk_combo_box_get_active(cb)].text);
+}
+
+static void show_help(GtkWindow *parent) {
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        L->help_title, parent, GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        L->help_close, GTK_RESPONSE_CLOSE, NULL);
+    GtkBox *box = GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg)));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+    gtk_box_set_spacing(box, 8);
+
+    const char *loc = g_getenv("LANG");
+    if (!loc) loc = "";
+    int cur = 0;
+    GtkWidget *cb = gtk_combo_box_text_new();
+    for (int i = 0; i < N_HELP; i++) {
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(cb), HELP[i].name);
+        if (strncmp(loc, HELP[i].code, 2) == 0) cur = i;
+    }
+    gtk_widget_set_halign(cb, GTK_ALIGN_END);
+
+    GtkWidget *lbl = gtk_label_new(NULL);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(lbl), 70);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0);
+    gtk_label_set_yalign(GTK_LABEL(lbl), 0);
+    gtk_label_set_selectable(GTK_LABEL(lbl), TRUE);
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(sw, 580, 460);
+    gtk_container_add(GTK_CONTAINER(sw), lbl);
+
+    gtk_box_pack_start(box, cb, FALSE, FALSE, 0);
+    gtk_box_pack_start(box, sw, TRUE, TRUE, 0);
+    g_signal_connect(cb, "changed", G_CALLBACK(on_help_lang), lbl);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(cb), cur);   /* fires "changed" → fills label */
+
+    gtk_widget_show_all(dlg);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
 static void show_settings(App *app) {
     GtkWidget *dlg = gtk_dialog_new_with_buttons(
         L->dlg_title, NULL,
@@ -534,14 +645,8 @@ static void show_settings(App *app) {
     gtk_widget_show_all(dlg);
 
     int resp;
-    while ((resp = gtk_dialog_run(GTK_DIALOG(dlg))) == GTK_RESPONSE_HELP) {
-        GtkWidget *h = gtk_message_dialog_new_with_markup(
-            GTK_WINDOW(dlg), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-            GTK_MESSAGE_INFO, GTK_BUTTONS_CLOSE, "%s", L->help_text);
-        gtk_window_set_title(GTK_WINDOW(h), L->help_title);
-        gtk_dialog_run(GTK_DIALOG(h));
-        gtk_widget_destroy(h);
-    }
+    while ((resp = gtk_dialog_run(GTK_DIALOG(dlg))) == GTK_RESPONSE_HELP)
+        show_help(GTK_WINDOW(dlg));
     if (resp == GTK_RESPONSE_OK) {
         for (int i = 0; i < n; i++)
             *rows[i].val = (int)gtk_range_get_value(GTK_RANGE(scales[i]));

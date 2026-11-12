@@ -25,10 +25,10 @@ Shake the mouse left and right — the cursor temporarily enlarges to 128 px so 
 
 ### Option 1 — Debian package (recommended)
 
-Download `mouse-finder_1.2.0_amd64.deb` from the [Releases](../../releases) page:
+Download `mouse-finder_1.2.1_amd64.deb` from the [Releases](../../releases) page:
 
 ```bash
-sudo apt install ./mouse-finder_1.2.0_amd64.deb
+sudo apt install ./mouse-finder_1.2.1_amd64.deb
 mouse-finder &
 ```
 
