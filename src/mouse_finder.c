@@ -5,10 +5,12 @@
 
 /* X11 headers before GTK to avoid None/Cursor conflicts */
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <X11/Xcursor/Xcursor.h>
 #include <cairo/cairo.h>
 #include <glib.h>
 #include <glib/gstdio.h>
+#include <glib-unix.h>
 #include <gtk/gtk.h>
 #include <libayatana-appindicator/app-indicator.h>
 #include <math.h>
@@ -37,6 +39,7 @@ typedef struct App {
     Window          overlay;
     Cursor          big_cursor;
     gboolean        grabbed;
+    guint           ungrab_id;      /* pending ungrab timeout, 0 if none */
     /* Settings */
     Settings        cfg;
     volatile gint   atm_min_speed;  /* read by record thread via g_atomic */
@@ -56,7 +59,7 @@ typedef struct App {
     int             saved_cursor_size;
     /* GTK */
     AppIndicator   *indicator;
-    GtkWidget      *i_auto;         /* autostart menu item — label updated on show */
+    GtkWidget      *i_auto;         /* autostart menu item — label updated on toggle */
     pthread_t       record_tid;
 } App;
 
@@ -346,57 +349,80 @@ static gboolean setup_record(App *app) {
 }
 
 /* ── Overlay / ungrab ────────────────────────────────────────────────────── */
+/* Enlargement has two layers:
+   1. GNOME cursor-size: cursors the compositor draws itself (Shell UI, window
+      frames, cursor-shape-v1 clients).
+   2. Fullscreen transparent override-redirect XWayland window with our big
+      cursor, stacked above all windows. Apps that draw their own cursor re-read
+      cursor-size only when the pointer re-enters them (bug 2026-11-12: "big only
+      after touching the window border"); under the overlay the pointer is over
+      our window, so our cursor shows everywhere.
+   ponytail: clicks during show_duration hit the overlay; the first click closes
+   it early and is lost. Input pass-through would also drop our cursor. */
+static Window overlay_create(App *app) {
+    Display *d = app->grab_dpy;
+    XVisualInfo vi;
+    if (!XMatchVisualInfo(d, DefaultScreen(d), 32, TrueColor, &vi)) return 0;
+    XSetWindowAttributes a = {0};
+    a.override_redirect = True;
+    a.colormap     = XCreateColormap(d, app->root, vi.visual, AllocNone);
+    a.cursor       = app->big_cursor;
+    a.event_mask   = ButtonPressMask;
+    return XCreateWindow(d, app->root, 0, 0, 1, 1, 0, 32, InputOutput, vi.visual,
+                         CWOverrideRedirect | CWColormap | CWBackPixel | CWBorderPixel |
+                         CWCursor | CWEventMask, &a);
+}
+
+static gboolean on_x_event(gint fd, GIOCondition cond, gpointer ud) {
+    App *app = (App *)ud;
+    gboolean clicked = FALSE;
+    (void)fd; (void)cond;
+    while (XPending(app->grab_dpy)) {
+        XEvent ev;
+        XNextEvent(app->grab_dpy, &ev);
+        if (ev.type == ButtonPress) clicked = TRUE;
+    }
+    if (clicked && app->grabbed) {
+        if (g_getenv("MOUSE_FINDER_DEBUG")) g_printerr("overlay click\n");
+        g_source_remove(app->ungrab_id);
+        ungrab(app);
+    }
+    return G_SOURCE_CONTINUE;
+}
+
 static gboolean on_shake(gpointer ud) {
     App *app = (App *)ud;
     if (g_getenv("MOUSE_FINDER_DEBUG")) g_printerr("shake detected\n");
     if (app->grabbed) return G_SOURCE_REMOVE;
 
     if (app->iface) {
-        /* ponytail: GNOME re-renders the pointer on cursor-size change, Wayland included.
-           If saved == ours, a previous run died mid-shake: fall back to GNOME default. */
+        /* ponytail: if saved == ours, a previous run died mid-shake: fall back to GNOME default. */
         app->saved_cursor_size = g_settings_get_int(app->iface, "cursor-size");
         if (app->saved_cursor_size == app->cfg.cursor_size) app->saved_cursor_size = 24;
         g_settings_set_int(app->iface, "cursor-size", app->cfg.cursor_size);
-        app->grabbed = TRUE;
-        g_timeout_add((guint)app->cfg.show_duration, ungrab, app);
-        return G_SOURCE_REMOVE;
     }
-
-    /* ponytail: InputOnly overlay instead of XGrabPointer —
-       XGrabPointer fails when GNOME Shell holds its own grab;
-       InputOnly window sets cursor without stealing input */
-    int scr = DefaultScreen(app->grab_dpy);
-    XSetWindowAttributes attr = {0};
-    attr.override_redirect = True;
-    attr.cursor = app->big_cursor;
-
-    int w = XDisplayWidth(app->grab_dpy, scr);
-    int h = XDisplayHeight(app->grab_dpy, scr);
-
-    app->overlay = XCreateWindow(
-        app->grab_dpy, app->root,
-        0, 0, (unsigned)w, (unsigned)h,
-        0, CopyFromParent, InputOnly, CopyFromParent,
-        CWOverrideRedirect | CWCursor, &attr);
-    XMapRaised(app->grab_dpy, app->overlay);
-    XFlush(app->grab_dpy);
-
-    app->grabbed = TRUE;
-    g_timeout_add((guint)app->cfg.show_duration, ungrab, app);
+    if (app->overlay) {
+        /* root geometry fetched each time: follows monitor hotplug, unlike XDisplayWidth */
+        Window r; int x, y; unsigned w, h, bw, depth;
+        XGetGeometry(app->grab_dpy, app->root, &r, &x, &y, &w, &h, &bw, &depth);
+        XMoveResizeWindow(app->grab_dpy, app->overlay, 0, 0, w, h);
+        XMapRaised(app->grab_dpy, app->overlay);
+        XFlush(app->grab_dpy);
+    }
+    app->grabbed   = TRUE;
+    app->ungrab_id = g_timeout_add((guint)app->cfg.show_duration, ungrab, app);
     return G_SOURCE_REMOVE;
 }
 
 static gboolean ungrab(gpointer ud) {
     App *app = (App *)ud;
-    if (app->iface) {
-        g_settings_set_int(app->iface, "cursor-size", app->saved_cursor_size);
-        app->grabbed = FALSE;
-        return G_SOURCE_REMOVE;
+    if (app->iface) g_settings_set_int(app->iface, "cursor-size", app->saved_cursor_size);
+    if (app->overlay) {
+        XUnmapWindow(app->grab_dpy, app->overlay);
+        XFlush(app->grab_dpy);
     }
-    XDestroyWindow(app->grab_dpy, app->overlay);
-    XFlush(app->grab_dpy);
-    app->overlay = 0;
-    app->grabbed = FALSE;
+    app->grabbed   = FALSE;
+    app->ungrab_id = 0;
     return G_SOURCE_REMOVE;
 }
 
@@ -410,6 +436,13 @@ static gboolean autostart_enabled(void) {
     char *p = autostart_path();
     gboolean r = g_file_test(p, G_FILE_TEST_EXISTS);
     g_free(p); return r;
+}
+
+/* Label set right after toggling: the AppIndicator menu is rendered by the shell
+   over D-Bus, so GtkMenu "show" never fires (bug 2026-11-12: label stuck at ON). */
+static void update_autostart_label(App *app) {
+    gtk_menu_item_set_label(GTK_MENU_ITEM(app->i_auto),
+                            autostart_enabled() ? L->menu_autostart_on : L->menu_autostart_off);
 }
 
 static void toggle_autostart(App *app) {
@@ -434,14 +467,16 @@ static void toggle_autostart(App *app) {
         g_free(content); g_free(exe);
     }
     g_free(path);
-    (void)app;
+    update_autostart_label(app);
 }
 
 /* ── Settings dialog ─────────────────────────────────────────────────────── */
 static void apply_settings(App *app, const Settings *s) {
     if (s->cursor_size != app->cfg.cursor_size) {
-        XFreeCursor(app->grab_dpy, app->big_cursor);
+        Cursor old = app->big_cursor;
         app->big_cursor = cursor_create(app->grab_dpy, s->cursor_size);
+        if (app->overlay) XDefineCursor(app->grab_dpy, app->overlay, app->big_cursor);
+        XFreeCursor(app->grab_dpy, old);
     }
     g_atomic_int_set(&app->atm_min_speed,     s->min_speed);
     g_atomic_int_set(&app->atm_min_reversals, s->min_reversals);
@@ -717,12 +752,6 @@ static void show_about(App *app) {
     gtk_widget_destroy(dlg);
 }
 
-static void on_menu_show(GtkWidget *w, App *app) {
-    (void)w;
-    const char *lbl = autostart_enabled() ? L->menu_autostart_on : L->menu_autostart_off;
-    gtk_menu_item_set_label(GTK_MENU_ITEM(app->i_auto), lbl);
-}
-
 static GtkWidget *build_tray_menu(App *app) {
     GtkWidget *menu = gtk_menu_new();
 
@@ -744,7 +773,7 @@ static GtkWidget *build_tray_menu(App *app) {
     g_signal_connect(i_quit, "activate", G_CALLBACK(gtk_main_quit), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), i_quit);
 
-    g_signal_connect(menu, "show", G_CALLBACK(on_menu_show), app);
+    update_autostart_label(app);
     gtk_widget_show_all(menu);
     return menu;
 }
@@ -766,6 +795,8 @@ int main(int argc, char **argv) {
     if (!app.grab_dpy) { g_printerr("Cannot open X display\n"); return 1; }
     app.root       = DefaultRootWindow(app.grab_dpy);
     app.big_cursor = cursor_create(app.grab_dpy, app.cfg.cursor_size);
+    app.overlay    = overlay_create(&app);
+    g_unix_fd_add(ConnectionNumber(app.grab_dpy), G_IO_IN, on_x_event, &app);
     if (g_settings_schema_source_lookup(g_settings_schema_source_get_default(),
                                         "org.gnome.desktop.interface", TRUE))
         app.iface = g_settings_new("org.gnome.desktop.interface");

@@ -1,5 +1,5 @@
 Package: mouse-finder
-Version: 1.2.1
+Version: 1.2.2
 Architecture: amd64
 Maintainer: Alexander Rozhkov <2246636@gmail.com>
 Depends: libgtk-3-0, libxcursor1, libx11-6, libcairo2, libglib2.0-0, libayatana-appindicator3-1, udev
