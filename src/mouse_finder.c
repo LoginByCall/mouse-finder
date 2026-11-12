@@ -109,19 +109,68 @@ typedef struct {
     const char *dlg_title, *dlg_cancel, *dlg_apply;
     const char *lbl_cursor, *lbl_duration, *lbl_reversals, *lbl_speed;
     const char *about_comments;
+    const char *help_title, *help_text;   /* Pango markup */
 } Lang;
 
 static const Lang L_RU = {
     "Настройки…", "Автостарт: ВКЛ ✓", "Автостарт: ВЫКЛ", "О программе…", "Выход",
     "Mouse Finder — Настройки", "Отмена", "Применить",
     "Размер курсора (px)", "Длительность (мс)", "Реверсов для тряски", "Мин. скорость (px/s)",
-    "Встряхни мышью — курсор увеличится и станет заметным."
+    "Встряхни мышью — курсор увеличится и станет заметным.",
+    "Mouse Finder — Справка",
+    "<b>Как это работает</b>\n"
+    "Быстро поводите мышью или пальцем по тачпаду <b>влево-вправо</b>. Когда программа "
+    "замечает тряску, курсор на время увеличивается, чтобы его было легко найти на экране. "
+    "Учитывается только горизонтальное движение и только последние 0,8 с. "
+    "После срабатывания следующее возможно не раньше чем через 1 с.\n\n"
+    "<b>Размер курсора (px)</b> — каким станет курсор во время показа. "
+    "Обычный курсор — 24 px. Чем больше значение, тем заметнее курсор, "
+    "особенно на большом или 4K-мониторе. По умолчанию 128.\n\n"
+    "<b>Длительность (мс)</b> — сколько миллисекунд курсор остаётся увеличенным, "
+    "потом возвращается к обычному размеру. 1000 мс = 1 с. По умолчанию 1500.\n\n"
+    "<b>Реверсов для тряски</b> — сколько раз движение должно сменить направление "
+    "(влево→вправо или вправо→влево) за 0,8 с, чтобы это считалось тряской. "
+    "Меньше — срабатывает легче, но чаще случайно при обычной работе; "
+    "больше — нужна более энергичная тряска. "
+    "Для тачпада удобно 2, для мыши — 3. По умолчанию 3.\n\n"
+    "<b>Мин. скорость (px/s)</b> — движения медленнее этой скорости тряской не считаются, "
+    "так что обычное перемещение курсора её не вызывает. Если движение замедлилось "
+    "дольше чем на 0,2 с, счёт смен направления начинается заново. "
+    "Скорость меряется в единицах самого устройства (у мыши — шаги датчика, у тачпада — "
+    "его координаты), а не в пикселях экрана, поэтому значение зависит от модели. "
+    "Меньше — срабатывает от более медленной тряски, но и чаще случайно. По умолчанию 300.\n\n"
+    "<b>Подбор</b>: если тряска не срабатывает, уменьшите «Реверсов» или «Мин. скорость»; "
+    "если срабатывает случайно — увеличьте их.\n\n"
+    "Настройки хранятся в ~/.config/mouse-finder.ini."
 };
 static const Lang L_EN = {
     "Settings…", "Autostart: ON ✓", "Autostart: OFF", "About…", "Quit",
     "Mouse Finder — Settings", "Cancel", "Apply",
     "Cursor size (px)", "Duration (ms)", "Reversals to detect", "Min speed (px/s)",
-    "Shake the mouse — the cursor enlarges to help you spot it."
+    "Shake the mouse — the cursor enlarges to help you spot it.",
+    "Mouse Finder — Help",
+    "<b>How it works</b>\n"
+    "Quickly move the mouse, or your finger on the touchpad, <b>left and right</b>. When a "
+    "shake is detected, the cursor is enlarged for a moment so it is easy to spot. "
+    "Only horizontal movement over the last 0.8 s is taken into account. "
+    "After a trigger the next one is possible no sooner than 1 s later.\n\n"
+    "<b>Cursor size (px)</b> — how big the cursor becomes while shown. A normal "
+    "cursor is 24 px. Larger is easier to spot, especially on big or 4K screens. Default 128.\n\n"
+    "<b>Duration (ms)</b> — how long the cursor stays enlarged before returning to "
+    "normal size. 1000 ms = 1 s. Default 1500.\n\n"
+    "<b>Reversals to detect</b> — how many times the movement must change direction "
+    "(left→right or right→left) within 0.8 s to count as a shake. Fewer triggers "
+    "more easily but also by accident during normal work; more needs a more vigorous shake. "
+    "2 suits a touchpad, 3 a mouse. Default 3.\n\n"
+    "<b>Min speed (px/s)</b> — movement slower than this is not counted as shaking, so "
+    "ordinary cursor movement does not trigger it. If movement stays slow for more than "
+    "0.2 s, the direction-change count starts over. Speed is measured in the device's own "
+    "units (sensor counts for a mouse, touchpad coordinates for a touchpad), not screen "
+    "pixels, so the right value depends on the device. Lower triggers on slower shakes, "
+    "but also more often by accident. Default 300.\n\n"
+    "<b>Tuning</b>: if shaking does not trigger, lower Reversals or Min speed; if it "
+    "triggers by accident, raise them.\n\n"
+    "Settings are stored in ~/.config/mouse-finder.ini."
 };
 static const Lang *L = &L_EN;
 
@@ -449,6 +498,8 @@ static void show_settings(App *app) {
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
         L->dlg_cancel, GTK_RESPONSE_CANCEL,
         L->dlg_apply,  GTK_RESPONSE_OK, NULL);
+    gtk_widget_set_tooltip_text(
+        gtk_dialog_add_button(GTK_DIALOG(dlg), "?", GTK_RESPONSE_HELP), L->help_title);
 
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
@@ -482,7 +533,16 @@ static void show_settings(App *app) {
     }
     gtk_widget_show_all(dlg);
 
-    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_OK) {
+    int resp;
+    while ((resp = gtk_dialog_run(GTK_DIALOG(dlg))) == GTK_RESPONSE_HELP) {
+        GtkWidget *h = gtk_message_dialog_new_with_markup(
+            GTK_WINDOW(dlg), GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_INFO, GTK_BUTTONS_CLOSE, "%s", L->help_text);
+        gtk_window_set_title(GTK_WINDOW(h), L->help_title);
+        gtk_dialog_run(GTK_DIALOG(h));
+        gtk_widget_destroy(h);
+    }
+    if (resp == GTK_RESPONSE_OK) {
         for (int i = 0; i < n; i++)
             *rows[i].val = (int)gtk_range_get_value(GTK_RANGE(scales[i]));
         apply_settings(app, &ns);
@@ -544,7 +604,7 @@ static void show_about(App *app) {
     (void)app;
     GtkWidget *dlg = gtk_about_dialog_new();
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dlg), "Mouse Finder");
-    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dlg), "1.1");
+    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dlg), "1.2");
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dlg), L->about_comments);
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dlg), "© 2026 Alexander Rozhkov");
     gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dlg), GTK_LICENSE_MIT_X11);

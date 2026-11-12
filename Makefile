@@ -1,4 +1,4 @@
-VERSION := 1.1.1
+VERSION := 1.2.0
 SRC     := src/mouse_finder.c
 BINARY  := dist/mouse-finder
 DEB     := dist/mouse-finder_$(VERSION)_amd64.deb
