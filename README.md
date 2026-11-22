@@ -30,7 +30,9 @@ Shake the mouse left and right — the cursor temporarily enlarges to 128 px so 
 - Read access to `/dev/input/event*` mouse nodes. The `.deb` package installs a udev rule
   that grants this automatically to the active graphical session user (no `input` group,
   no re-login). If you installed from source, see [Installation](#option-2--from-source).
-- Runtime libs (pre-installed on Ubuntu Desktop): `libgtk-3-0 libxcursor1 libcairo2 libayatana-appindicator3-1`
+- Runtime libs: `libgtk-3-0 libglib2.0-0 libx11-6 libxcursor1 libcairo2
+  libayatana-appindicator3-1 udev` — all pre-installed on Ubuntu Desktop; the
+  `.deb` declares them as package dependencies
 
 ## Installation
 
@@ -59,6 +61,21 @@ The udev rule step is what lets the app read `/dev/input/event*` without root; s
 only if you already have another way to grant that access (e.g. `input` group membership).
 
 Use the **Autostart** toggle in the tray menu to launch automatically on login.
+
+### Uninstalling
+
+```bash
+sudo apt remove mouse-finder          # .deb install: removes binary, menu entry, udev rule
+rm -f ~/.config/mouse-finder.ini      # optional: your settings
+rm -f ~/.config/autostart/mouse-finder.desktop  # optional: autostart entry
+```
+
+If you installed the udev rule manually (source install), remove it too:
+
+```bash
+sudo rm -f /usr/lib/udev/rules.d/70-mouse-finder-uaccess.rules
+sudo udevadm control --reload-rules
+```
 
 ## Usage
 
@@ -96,12 +113,24 @@ Settings take effect immediately without restart.
 | CPU / wakeups at idle | 0% / 0 — the input thread sleeps until input or a device change (inotify) |
 | Memory over time | flat (150 shake cycles: +12 KB) |
 
+## Known limitations
+
+- The GNOME top bar is drawn above all windows, so over it the enlarged cursor comes
+  only from the `cursor-size` change — the XWayland overlay cannot cover that area.
+- Tested on Ubuntu 24.04/26.04 with GNOME (X11 and Wayland sessions). Outside GNOME
+  the app falls back to the fullscreen overlay path; other desktops and distros are
+  untested — reports welcome.
+
 ## Troubleshooting
 
 If shaking doesn't enlarge the cursor, mouse-finder likely can't read `/dev/input`. Run it
 from a terminal — it prints a diagnostic if no mouse device is accessible. Reinstalling the
 `.deb` re-applies the udev rule; a manual `input`-group membership needs a re-login to take
 effect.
+
+To check whether shake detection fires at all, run it as
+`MOUSE_FINDER_DEBUG=1 mouse-finder` — it prints `shake detected` to the terminal on every
+trigger (and `overlay click` when the overlay closes early).
 
 ## Tests
 
